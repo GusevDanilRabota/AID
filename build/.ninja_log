@@ -1,0 +1,6 @@
+# ninja log v7
+8	65	8063066224125689	CMakeFiles/clone.dir/asm_funcs.S.obj	66b426de50a71f8
+2	168	8063066224055928	CMakeFiles/clone.dir/clone.c.obj	7fff8db00e4143f4
+14	190	8063066224175522	CMakeFiles/model_builder.dir/model_builder.c.obj	ad9ef0ec355db9fc
+168	302	8063066225723746	clone.exe	9c86f1464f02caba
+191	302	8063066225943013	model_builder.exe	3a09dfd75447944d
