@@ -1,13 +1,19 @@
+# @file asm_funcs.S
+# @brief Ассемблерные реализации LFSR и бинарного поиска (Intel-синтаксис).
+# @details Соглашение о вызовах Microsoft x64:
+#          - Первые 4 целочисленных параметра: rcx, rdx, r8, r9
+#          - Результат в rax (uint16_t возвращается в ax)
+#          - Регистры rax, rcx, rdx, r8-r11 являются volatile
 .intel_syntax noprefix
 .text
-.global lfsr_rand, binary_search_entry
+.global lfsr_rand, binary_search_entry, lfsr_seed
 
-# uint16_t lfsr_rand(void)
+# @brief 16-битный генератор псевдослучайных чисел на базе 32-битного LFSR (xorshift).
+# @return uint16_t – очередное случайное число.
 lfsr_rand:
     push rbp
     mov rbp, rsp
-    # Используем глобальную переменную состояния (можно через TLS, но для прототипа static memory)
-    mov eax, DWORD PTR [rip + lfsr_state]
+    mov eax, DWORD PTR [rip + lfsr_state]  # загружаем состояние
     mov edx, eax
     shl edx, 13
     xor eax, edx
@@ -16,60 +22,66 @@ lfsr_rand:
     xor eax, edx
     mov edx, eax
     shl edx, 5
-    xor eax, edx
-    mov DWORD PTR [rip + lfsr_state], eax
-    # возвращаем младшие 16 бит
-    and eax, 0xFFFF
+    xor eax, edx                          # xorshift
+    mov DWORD PTR [rip + lfsr_state], eax  # сохраняем новое состояние
+    and eax, 0xFFFF                       # возвращаем младшие 16 бит
     pop rbp
     ret
 
-.data
-.align 4
-lfsr_state: .long 0xDEADBEEF
+# @brief Инициализация состояния LFSR.
+# @param seed 32-битное начальное значение (передаётся в ECX).
+lfsr_seed:
+    mov DWORD PTR [rip + lfsr_state], ecx
+    ret
 
-# uint16_t binary_search_entry(const uint16_t *row, uint16_t rnd, int len)
+# @brief Бинарный поиск в строке матрицы переходов.
+# @param row Указатель на массив пар {uint16_t id, uint16_t cum_prob} (RCX).
+# @param rnd Случайное число uint16_t (передаётся в EDX, используется младшие 16 бит).
+# @param len Количество элементов в строке (R8D).
+# @return uint16_t Идентификатор следующего токена.
 binary_search_entry:
-    # rdi = row pointer, rsi = rnd, edx = len
-    xor eax, eax          # индекс = 0
-    cmp edx, 0
-    je .end_error
-    # сохраняем базу в rdi, будем искать бинарно
+    xor eax, eax                  # результат = 0
+    test r8d, r8d                 # if len == 0 goto error
+    jz .end_error
     push rbx
-    mov ecx, edx          # ecx = high = len-1
-    dec ecx
-    xor ebx, ebx          # ebx = low = 0
+    # high = len - 1
+    dec r8d                       # r8d = high
+    xor ebx, ebx                  # low = 0
 .loop:
-    cmp ebx, ecx
+    cmp ebx, r8d
     jg .not_found
-    mov edx, ebx
-    add edx, ecx
-    shr edx, 1            # mid
-    lea r8, [rdi + rdx*4] # каждая запись 4 байта (2+2)
-    movzx r9d, WORD PTR [r8+2]  # cum_prob (смещение +2)
-    cmp r9w, si
+    # mid = (low + high) / 2
+    lea r9d, [ebx + r8d]
+    shr r9d, 1
+    # r10 = &row[mid]
+    lea r10, [rcx + r9*4]         # каждая запись 4 байта (id + cum_prob)
+    movzx r11d, WORD PTR [r10+2]  # cum_prob
+    cmp r11w, dx                  # сравнение с rnd
     jae .maybe_left
-    # cum_prob < rnd -> идём вправо
-    lea ebx, [rdx + 1]
+    lea ebx, [r9d + 1]            # low = mid + 1
     jmp .loop
 .maybe_left:
-    # cum_prob >= rnd; проверим предыдущий элемент
-    cmp edx, 0
-    je .found
-    movzx r10d, WORD PTR [r8 - 2] # cum_prob предыдущего (смещение -2 от текущего, адрес r8-4+2)
-    cmp r10w, si
-    jb .found
-    # prev >= rnd -> сдвигаем high в mid-1
-    lea ecx, [rdx - 1]
+    test r9d, r9d
+    jz .found                     # если mid == 0, то сразу подходит
+    # проверим предыдущий cum_prob
+    movzx r11d, WORD PTR [r10 - 2]
+    cmp r11w, dx
+    jb .found                     # prev < rnd => нашли
+    lea r8d, [r9d - 1]            # high = mid - 1
     jmp .loop
 .found:
-    movzx eax, WORD PTR [r8]   # id
+    movzx eax, WORD PTR [r10]     # id
     pop rbx
     ret
 .not_found:
-    movzx eax, WORD PTR [rdi]  # если всё < rnd, возвращаем первый (защита)
+    movzx eax, WORD PTR [rcx]     # возвращаем первый элемент
     pop rbx
     ret
 .end_error:
     xor eax, eax
     pop rbx
     ret
+
+.data
+.align 4
+lfsr_state: .long 0xDEADBEEF

@@ -36,86 +36,49 @@ include CMakeFiles/rules.ninja
 
 cmake_ninja_workdir = C$:/Project/AID/build/
 # =============================================================================
-# Object build statements for EXECUTABLE target clone
+# Object build statements for EXECUTABLE target test_asm
 
 
 #############################################
-# Order-only phony target for clone
+# Order-only phony target for test_asm
 
-build cmake_object_order_depends_target_clone: phony || .
+build cmake_object_order_depends_target_test_asm: phony || .
 
-build CMakeFiles/clone.dir/clone.c.obj: C_COMPILER__clone_unscanned_ C$:/Project/AID/clone.c || cmake_object_order_depends_target_clone
-  DEP_FILE = CMakeFiles\clone.dir\clone.c.obj.d
+build CMakeFiles/test_asm.dir/tests/test_asm.c.obj: C_COMPILER__test_asm_unscanned_ C$:/Project/AID/tests/test_asm.c || cmake_object_order_depends_target_test_asm
+  DEP_FILE = CMakeFiles\test_asm.dir\tests\test_asm.c.obj.d
   FLAGS = -std=gnu11
-  OBJECT_DIR = CMakeFiles\clone.dir
-  OBJECT_FILE_DIR = CMakeFiles\clone.dir
-  TARGET_COMPILE_PDB = CMakeFiles\clone.dir\
-  TARGET_PDB = clone.pdb
-  TARGET_SUPPORT_DIR = CMakeFiles\clone.dir
+  OBJECT_DIR = CMakeFiles\test_asm.dir
+  OBJECT_FILE_DIR = CMakeFiles\test_asm.dir\tests
+  TARGET_COMPILE_PDB = CMakeFiles\test_asm.dir\
+  TARGET_PDB = test_asm.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\test_asm.dir
 
-build CMakeFiles/clone.dir/asm_funcs.S.obj: ASM_COMPILER__clone_unscanned_ C$:/Project/AID/asm_funcs.S || cmake_object_order_depends_target_clone
-  DEP_FILE = CMakeFiles\clone.dir\asm_funcs.S.obj.d
-  OBJECT_DIR = CMakeFiles\clone.dir
-  OBJECT_FILE_DIR = CMakeFiles\clone.dir
-  TARGET_COMPILE_PDB = CMakeFiles\clone.dir\
-  TARGET_PDB = clone.pdb
-  TARGET_SUPPORT_DIR = CMakeFiles\clone.dir
+build CMakeFiles/test_asm.dir/asm_funcs.S.obj: ASM_COMPILER__test_asm_unscanned_ C$:/Project/AID/asm_funcs.S || cmake_object_order_depends_target_test_asm
+  DEP_FILE = CMakeFiles\test_asm.dir\asm_funcs.S.obj.d
+  OBJECT_DIR = CMakeFiles\test_asm.dir
+  OBJECT_FILE_DIR = CMakeFiles\test_asm.dir
+  TARGET_COMPILE_PDB = CMakeFiles\test_asm.dir\
+  TARGET_PDB = test_asm.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\test_asm.dir
 
 
 # =============================================================================
-# Link build statements for EXECUTABLE target clone
+# Link build statements for EXECUTABLE target test_asm
 
 
 #############################################
-# Link the executable clone.exe
+# Link the executable test_asm.exe
 
-build clone.exe: C_EXECUTABLE_LINKER__clone_ CMakeFiles/clone.dir/clone.c.obj CMakeFiles/clone.dir/asm_funcs.S.obj
+build test_asm.exe: C_EXECUTABLE_LINKER__test_asm_ CMakeFiles/test_asm.dir/tests/test_asm.c.obj CMakeFiles/test_asm.dir/asm_funcs.S.obj
   LINK_LIBRARIES = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
-  OBJECT_DIR = CMakeFiles\clone.dir
+  OBJECT_DIR = CMakeFiles\test_asm.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\clone.dir\
-  TARGET_FILE = clone.exe
-  TARGET_IMPLIB = libclone.dll.a
-  TARGET_PDB = clone.pdb
-  TARGET_SUPPORT_DIR = CMakeFiles\clone.dir
-
-# =============================================================================
-# Object build statements for EXECUTABLE target model_builder
-
-
-#############################################
-# Order-only phony target for model_builder
-
-build cmake_object_order_depends_target_model_builder: phony || .
-
-build CMakeFiles/model_builder.dir/model_builder.c.obj: C_COMPILER__model_builder_unscanned_ C$:/Project/AID/model_builder.c || cmake_object_order_depends_target_model_builder
-  DEP_FILE = CMakeFiles\model_builder.dir\model_builder.c.obj.d
-  FLAGS = -std=gnu11
-  OBJECT_DIR = CMakeFiles\model_builder.dir
-  OBJECT_FILE_DIR = CMakeFiles\model_builder.dir
-  TARGET_COMPILE_PDB = CMakeFiles\model_builder.dir\
-  TARGET_PDB = model_builder.pdb
-  TARGET_SUPPORT_DIR = CMakeFiles\model_builder.dir
-
-
-# =============================================================================
-# Link build statements for EXECUTABLE target model_builder
-
-
-#############################################
-# Link the executable model_builder.exe
-
-build model_builder.exe: C_EXECUTABLE_LINKER__model_builder_ CMakeFiles/model_builder.dir/model_builder.c.obj
-  LINK_LIBRARIES = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
-  OBJECT_DIR = CMakeFiles\model_builder.dir
-  POST_BUILD = cd .
-  PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\model_builder.dir\
-  TARGET_FILE = model_builder.exe
-  TARGET_IMPLIB = libmodel_builder.dll.a
-  TARGET_PDB = model_builder.pdb
-  TARGET_SUPPORT_DIR = CMakeFiles\model_builder.dir
+  TARGET_COMPILE_PDB = CMakeFiles\test_asm.dir\
+  TARGET_FILE = test_asm.exe
+  TARGET_IMPLIB = libtest_asm.dll.a
+  TARGET_PDB = test_asm.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\test_asm.dir
 
 
 #############################################
@@ -143,9 +106,7 @@ build rebuild_cache: phony CMakeFiles/rebuild_cache.util
 # =============================================================================
 # Target aliases.
 
-build clone: phony clone.exe
-
-build model_builder: phony model_builder.exe
+build test_asm: phony test_asm.exe
 
 # =============================================================================
 # Folder targets.
@@ -155,7 +116,7 @@ build model_builder: phony model_builder.exe
 #############################################
 # Folder: C:/Project/AID/build
 
-build all: phony clone.exe model_builder.exe
+build all: phony test_asm.exe
 
 # =============================================================================
 # Built-in targets

@@ -1,6 +1,4 @@
 # ninja log v7
-8	65	8063066224125689	CMakeFiles/clone.dir/asm_funcs.S.obj	66b426de50a71f8
-2	168	8063066224055928	CMakeFiles/clone.dir/clone.c.obj	7fff8db00e4143f4
-14	190	8063066224175522	CMakeFiles/model_builder.dir/model_builder.c.obj	ad9ef0ec355db9fc
-168	302	8063066225723746	clone.exe	9c86f1464f02caba
-191	302	8063066225943013	model_builder.exe	3a09dfd75447944d
+7	93	8063123280016652	CMakeFiles/test_asm.dir/asm_funcs.S.obj	9574969d552ea257
+2	96	8063123279956851	CMakeFiles/test_asm.dir/tests/test_asm.c.obj	a23845ae955eec35
+97	187	8063123280903676	test_asm.exe	fc91a5ad318819e9

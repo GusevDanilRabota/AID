@@ -3,8 +3,5 @@ project(MarkovClone C ASM)
 
 set(CMAKE_C_STANDARD 11)
 
-# Клон (C + ASM)
-add_executable(clone clone.c asm_funcs.S)
-
-# Утилита построения модели (чистый C)
-add_executable(model_builder model_builder.c)
+# Тесты для ассемблерных функций (единственная цель)
+add_executable(test_asm tests/test_asm.c asm_funcs.S)
