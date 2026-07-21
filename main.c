@@ -1,12 +1,6 @@
-/**
- * @file main.c
- * @brief Главный файл: парсинг, генерация и диалог.
- * gcc -std=c99 -Wall -o markov_processor main.c md_parser.c markov.c console_chat.c -lm
- */
-
 #include "md_parser.h"
 #include "markov.h"
-#include "console_chat.h"
+#include "interactive.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -19,7 +13,7 @@ int main(void) {
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
-    // 1. Парсинг Markdown-файлов (если папка input существует)
+    // 1. Парсинг
     printf("=== Parsing Markdown files ===\n");
     process_markdown_files("input", "output");
 
@@ -39,44 +33,16 @@ int main(void) {
         markov_free();
         return 1;
     }
-
-    // Загружаем стоп-слова (если файл существует)
     markov_load_stopwords("stopwords.txt");
 
-    // 3. Выбор режима
-    printf("\n=== Choose mode ===\n");
-    printf("1 - Generate Markdown files (demo)\n");
-    printf("2 - Interactive chat with Markov generator\n");
-    printf("Enter your choice (1 or 2): ");
-    char choice[8];
-    if (fgets(choice, sizeof(choice), stdin) == NULL) choice[0] = '1';
-    int mode = atoi(choice);
-    if (mode != 2) mode = 1;
+    // 3. Демонстрационные генерации
+    printf("\n=== Demo generations ===\n");
+    // ... (можно оставить старый код или убрать)
 
-    if (mode == 1) {
-        // Демонстрационный режим: генерация .md файлов
-        printf("\n=== Generating Markdown files ===\n");
-        MarkovGenOptions opts[] = {
-            {0, 0.8, 30, "<BOS>", 0},
-            {1, 0.9, 30, "The", 1},
-            {2, 0.7, 25, "Once", 0}
-        };
-        markov_generate_md_file("output/generated_markdown.md", "Generated Text with Trigram", 3, opts);
-        markov_export_dot("output/unigram_graph.dot", 0, 0.05);
-        markov_export_dot("output/bigram_graph.dot", 1, 0.05);
-        printf("Generated: output/generated_markdown.md, output/*.dot\n");
-    } else {
-        // Интерактивный чат
-        printf("\n=== Starting interactive chat ===\n");
-        ChatConfig config = {
-            .output_filename = "chat_log.md",
-            .order = 1,
-            .temperature = 0.8,
-            .max_tokens = 50,
-            .use_stopwords = 0
-        };
-        start_chat(&config);
-    }
+    // 4. Интерактивный режим
+    printf("\n=== Starting interactive mode ===\n");
+    // Параметры: порядок=2 (биграммы), температура=0.8, макс. токенов=30, фильтрация стоп-слов включена
+    interactive_start("dialog.md", 2, 0.8, 30, 1);
 
     markov_free();
     return 0;
