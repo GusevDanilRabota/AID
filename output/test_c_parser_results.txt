@@ -1,0 +1,11 @@
+=== Test Results for c_parser ===
+Generated: Jul 21 2026 13:31:09
+------------------------------------
+
+[PASS] local_tables_created
+[PASS] unigram_content
+[PASS] bigram_content
+[PASS] trigram_content
+
+------------------------------------
+TOTAL: 4 passed, 0 failed

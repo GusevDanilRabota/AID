@@ -93,10 +93,11 @@ Token* get_next_token(FILE *f) {
         return tok;
     }
 
-    // Комментарии
+    // Обработка комментариев
     if (c == '/') {
         int next = peek_char(f);
-        if (next == '/') { // однострочный
+        if (next == '/') {
+            // однострочный комментарий (без изменений)
             fgetc(f);
             char *content = read_until(f, '\n', 0);
             Token *tok = malloc(sizeof(Token));
@@ -105,21 +106,18 @@ Token* get_next_token(FILE *f) {
             sprintf(tok->value, "//%s", content);
             free(content);
             return tok;
-        } else if (next == '*') { // многострочный
-            fgetc(f);
+        } else if (next == '*') {
+            fgetc(f); // пропускаем '*'
             char buffer[4096];
             int pos = 0;
-            int prev = 0;
+            int c;
             while ((c = fgetc(f)) != EOF) {
-                if (prev == '*' && c == '/') {
+                if (pos < (int)(sizeof(buffer) - 1)) buffer[pos++] = c;
+                // Проверяем, не встретили ли '*/'
+                if (pos >= 2 && buffer[pos-2] == '*' && buffer[pos-1] == '/') {
+                    pos -= 2; // удаляем '*/' из буфера
                     break;
                 }
-                if (pos < (int)(sizeof(buffer) - 1)) buffer[pos++] = c;
-                prev = c;
-            }
-            // Убираем последний символ, если это '*'
-            if (pos > 0 && buffer[pos-1] == '*') {
-                pos--;
             }
             buffer[pos] = '\0';
             Token *tok = malloc(sizeof(Token));
@@ -128,6 +126,7 @@ Token* get_next_token(FILE *f) {
             sprintf(tok->value, "/*%s*/", buffer);
             return tok;
         }
+        // иначе это одиночный '/'
     }
 
     // Препроцессор
