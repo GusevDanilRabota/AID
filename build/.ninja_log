@@ -1,4 +1,0 @@
-# ninja log v7
-7	93	8063123280016652	CMakeFiles/test_asm.dir/asm_funcs.S.obj	9574969d552ea257
-2	96	8063123279956851	CMakeFiles/test_asm.dir/tests/test_asm.c.obj	a23845ae955eec35
-97	187	8063123280903676	test_asm.exe	fc91a5ad318819e9

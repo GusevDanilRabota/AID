@@ -1,3 +1,0 @@
-C:/Project/AID/build/CMakeFiles/test_asm.dir
-C:/Project/AID/build/CMakeFiles/edit_cache.dir
-C:/Project/AID/build/CMakeFiles/rebuild_cache.dir

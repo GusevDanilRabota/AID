@@ -1,0 +1,3 @@
+apple -> and(1), banana(1), apple(2)
+banana -> apple(1), banana(1)
+and -> banana(1)
