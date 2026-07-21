@@ -21,8 +21,10 @@
 #define MAX_ATTEMPTS  10
 
 /* ------------------------------------------------------------------
- * Внутренние структуры (униграммы, биграммы, триграммы)
+ * Определения структур (ДО объявления глобальных переменных)
  * ------------------------------------------------------------------ */
+
+/* Униграмма */
 typedef struct unigram_transition {
     char *target;
     double prob;
@@ -32,10 +34,11 @@ typedef struct unigram_transition {
 typedef struct unigram_entry {
     char *word;
     unigram_transition *transitions;
-    double cumulative;
+    double cumulative;          /* не используется, но оставлено для совместимости */
     struct unigram_entry *next;
 } unigram_entry;
 
+/* Биграмма */
 typedef struct bigram_transition {
     char *target;
     double prob;
@@ -49,6 +52,7 @@ typedef struct bigram_entry {
     struct bigram_entry *next;
 } bigram_entry;
 
+/* Триграмма */
 typedef struct trigram_transition {
     char *target;
     double prob;
@@ -63,7 +67,7 @@ typedef struct trigram_entry {
 } trigram_entry;
 
 /* ------------------------------------------------------------------
- * Глобальные данные
+ * Глобальные хеш-таблицы и счётчики
  * ------------------------------------------------------------------ */
 static unigram_entry **unigram_hash = NULL;
 static bigram_entry  **bigram_hash  = NULL;
@@ -114,7 +118,6 @@ int markov_load_unigram(const char *filename) {
 
         char *rest = arrow + 4;
         char *token = strtok(rest, ",");
-        double cum = 0.0;
         while (token) {
             while (isspace(*token)) token++;
             char *open = strchr(token, '(');
@@ -127,7 +130,6 @@ int markov_load_unigram(const char *filename) {
                     char *end = target + strlen(target) - 1;
                     while (end > target && isspace(*end)) { *end = '\0'; end--; }
                     double prob = atof(open + 1);
-                    cum += prob;
                     unigram_transition *t = malloc(sizeof(unigram_transition));
                     if (t) {
                         t->target = target;
@@ -141,7 +143,6 @@ int markov_load_unigram(const char *filename) {
             }
             token = strtok(NULL, ",");
         }
-        entry->cumulative = cum;
 
         unsigned int h = hash_str(word);
         entry->next = unigram_hash[h];
@@ -181,7 +182,6 @@ int markov_load_bigram(const char *filename) {
 
         char *rest = arrow + 4;
         char *token = strtok(rest, ",");
-        double cum = 0.0;
         while (token) {
             while (isspace(*token)) token++;
             char *open = strchr(token, '(');
@@ -194,7 +194,6 @@ int markov_load_bigram(const char *filename) {
                     char *end = target + strlen(target) - 1;
                     while (end > target && isspace(*end)) { *end = '\0'; end--; }
                     double prob = atof(open + 1);
-                    cum += prob;
                     bigram_transition *t = malloc(sizeof(bigram_transition));
                     if (t) {
                         t->target = target;
@@ -208,7 +207,6 @@ int markov_load_bigram(const char *filename) {
             }
             token = strtok(NULL, ",");
         }
-        entry->cumulative = cum;
 
         unsigned int h = hash_str(key);
         entry->next = bigram_hash[h];
@@ -248,7 +246,6 @@ int markov_load_trigram(const char *filename) {
 
         char *rest = arrow + 4;
         char *token = strtok(rest, ",");
-        double cum = 0.0;
         while (token) {
             while (isspace(*token)) token++;
             char *open = strchr(token, '(');
@@ -261,7 +258,6 @@ int markov_load_trigram(const char *filename) {
                     char *end = target + strlen(target) - 1;
                     while (end > target && isspace(*end)) { *end = '\0'; end--; }
                     double prob = atof(open + 1);
-                    cum += prob;
                     trigram_transition *t = malloc(sizeof(trigram_transition));
                     if (t) {
                         t->target = target;
@@ -275,7 +271,6 @@ int markov_load_trigram(const char *filename) {
             }
             token = strtok(NULL, ",");
         }
-        entry->cumulative = cum;
 
         unsigned int h = hash_str(key);
         entry->next = trigram_hash[h];
@@ -316,7 +311,7 @@ static int is_stopword(const char *word) {
 }
 
 /* ------------------------------------------------------------------
- * Выбор следующего токена (универсальная)
+ * Универсальная функция выбора следующего токена
  * ------------------------------------------------------------------ */
 static char* choose_next_generic(void *transitions, double temperature, int is_bigram, int is_trigram) {
     int count = 0;
@@ -341,8 +336,7 @@ static char* choose_next_generic(void *transitions, double temperature, int is_b
     if (is_trigram) {
         trigram_transition *t = (trigram_transition*)transitions;
         while (t) {
-            double p = t->prob;
-            if (temperature > 0.0) p = pow(p, 1.0 / temperature);
+            double p = (temperature > 0.0) ? pow(t->prob, 1.0 / temperature) : t->prob;
             probs[i] = p;
             targets[i] = t->target;
             sum += p;
@@ -352,8 +346,7 @@ static char* choose_next_generic(void *transitions, double temperature, int is_b
     } else if (is_bigram) {
         bigram_transition *t = (bigram_transition*)transitions;
         while (t) {
-            double p = t->prob;
-            if (temperature > 0.0) p = pow(p, 1.0 / temperature);
+            double p = (temperature > 0.0) ? pow(t->prob, 1.0 / temperature) : t->prob;
             probs[i] = p;
             targets[i] = t->target;
             sum += p;
@@ -363,8 +356,7 @@ static char* choose_next_generic(void *transitions, double temperature, int is_b
     } else {
         unigram_transition *t = (unigram_transition*)transitions;
         while (t) {
-            double p = t->prob;
-            if (temperature > 0.0) p = pow(p, 1.0 / temperature);
+            double p = (temperature > 0.0) ? pow(t->prob, 1.0 / temperature) : t->prob;
             probs[i] = p;
             targets[i] = t->target;
             sum += p;
@@ -409,8 +401,8 @@ int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *op
     char *current = strdup(start);
     if (!current) return -1;
 
-    char *prev1 = NULL;
-    char *prev2 = NULL;
+    char *prev1 = NULL;   // для биграмм и триграмм
+    char *prev2 = NULL;   // для триграмм
 
     size_t len = strlen(current);
     if (used + len + 2 < buf_size) {
@@ -426,6 +418,7 @@ int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *op
     for (int step = 0; step < options->max_tokens; step++) {
         char *next = NULL;
 
+        // Триграмма
         if (options->order == 2 && prev1 && prev2) {
             char key[3 * MAX_TOKEN_LEN + 3];
             snprintf(key, sizeof(key), "%s|%s|%s", prev2, prev1, current);
@@ -450,6 +443,7 @@ int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *op
             }
         }
 
+        // Биграмма (если триграмма не дала результат или не используется)
         if (!next && options->order >= 1 && prev1) {
             char key[2 * MAX_TOKEN_LEN + 2];
             snprintf(key, sizeof(key), "%s|%s", prev1, current);
@@ -474,6 +468,7 @@ int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *op
             }
         }
 
+        // Униграмма (если ничего не сработало)
         if (!next) {
             unigram_entry *entry = NULL;
             if (unigram_hash) {
@@ -524,7 +519,7 @@ int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *op
 }
 
 /* ------------------------------------------------------------------
- * Совместимая обёртка (старый API)
+ * Совместимая обёртка для старого API
  * ------------------------------------------------------------------ */
 int markov_generate(char *buffer, size_t buf_size, int max_tokens,
                     double temperature, int use_bigram, const char *start_token) {
@@ -533,7 +528,7 @@ int markov_generate(char *buffer, size_t buf_size, int max_tokens,
 }
 
 /* ------------------------------------------------------------------
- * Генерация MD-файла с преобразованием токенов в разметку
+ * Форматирование строки для Markdown (замена спецтокенов)
  * ------------------------------------------------------------------ */
 static void format_md_string(char *str) {
     char *patterns[][2] = {
@@ -560,6 +555,9 @@ static void format_md_string(char *str) {
     }
 }
 
+/* ------------------------------------------------------------------
+ * Генерация MD-файла
+ * ------------------------------------------------------------------ */
 int markov_generate_md_file(const char *filename, const char *title,
                             int num_blocks, const MarkovGenOptions *options) {
     if (!filename || num_blocks <= 0 || !options) return -1;
@@ -625,7 +623,7 @@ int markov_export_dot(const char *filename, int order, double min_prob) {
             }
         }
     } else {
-        fprintf(stderr, "Unsupported order for DOT export (only 0 or 1)\n");
+        fprintf(stderr, "Unsupported order for DOT export\n");
         fclose(f);
         return -1;
     }
