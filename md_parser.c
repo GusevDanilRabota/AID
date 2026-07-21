@@ -1,9 +1,9 @@
 /**
  * @file md_parser.c
- * @brief Реализация парсера Markdown-файлов для цепей Маркова с поддержкой глобальной таблицы вероятностей.
+ * @brief Реализация расширенного парсера Markdown с поддержкой биграмм, структуры и сглаживания.
  * 
- * Содержит все структуры и функции для извлечения слов, подсчёта переходов,
- * работы с файловой системой и вывода результатов как по отдельным файлам, так и в обобщённом виде.
+ * Содержит все функции для извлечения токенов, построения униграммных и биграммных переходов,
+ * учёта регистра, пунктуации, маркдаун-разметки, а также записи таблиц частот и вероятностей.
  */
 
 #include "md_parser.h"
@@ -16,81 +16,88 @@
 #include <sys/stat.h>
 
 #ifdef _WIN32
-    #include <direct.h>      // для _mkdir
+    #include <direct.h>          // для _mkdir
     #define strcasecmp _stricmp
 #else
-    #include <strings.h>     // для strcasecmp
+    #include <strings.h>         // для strcasecmp
+    #define _mkdir(dir) mkdir(dir, 0755)   // для единообразия, но не используется
 #endif
 
-/* Константы настройки парсера */
-#define HASH_SIZE   1024     /**< Размер хеш-таблицы для слов */
-#define MAX_WORD_LEN 256     /**< Максимальная длина слова */
-#define GLOBAL_TABLE_NAME "global_table.txt" /**< Имя файла для глобальной таблицы вероятностей */
+/* ------------------------------------------------------------------
+ * Конфигурационные константы
+ * ------------------------------------------------------------------ */
+#define HASH_SIZE       1024      /**< Размер хеш-таблиц */
+#define MAX_WORD_LEN    256       /**< Максимальная длина токена */
+#define SMOOTHING_ALPHA 0.01f     /**< Коэффициент аддитивного сглаживания */
+#define UNIGRAM_TABLE  "global_unigram.txt"
+#define BIGRAM_TABLE   "global_bigram.txt"
 
-/**
- * @struct transition
- * @brief Элемент списка переходов из одного слова в другое.
- */
+/* ------------------------------------------------------------------
+ * Структуры для униграмм (первый порядок)
+ * ------------------------------------------------------------------ */
 typedef struct transition {
-    int target_index;        /**< Индекс слова-приёмника в глобальном массиве */
-    int count;               /**< Количество таких переходов */
-    struct transition *next; /**< Следующий переход в списке */
+    int target_index;
+    int count;
+    struct transition *next;
 } transition;
 
-/**
- * @struct word_entry
- * @brief Запись о слове и все переходы из него.
- */
 typedef struct word_entry {
-    char *word;              /**< Само слово (строка) */
-    transition *transitions; /**< Список переходов в другие слова */
+    char *word;
+    transition *transitions;
 } word_entry;
 
-/**
- * @struct word_node
- * @brief Элемент цепочки в хеш-таблице для быстрого поиска индекса слова.
- */
 typedef struct word_node {
-    char *word;              /**< Слово (указатель на ту же строку, что и в word_entry) */
-    int index;               /**< Индекс слова в массиве word_entry */
-    struct word_node *next;  /**< Следующий элемент в цепочке коллизий */
+    char *word;
+    int index;
+    struct word_node *next;
 } word_node;
 
-/**
- * @struct parse_context
- * @brief Контекст парсинга (содержит все динамические структуры для одного или глобального набора данных).
- */
 typedef struct {
-    word_entry *words;       /**< Массив всех уникальных слов */
-    int word_count;          /**< Текущее количество слов */
-    int word_capacity;       /**< Выделенная ёмкость массива words */
-    word_node **hash_table;  /**< Хеш-таблица для поиска индекса по строке */
-} parse_context;
+    word_entry *words;
+    int word_count;
+    int word_capacity;
+    word_node **hash_table;
+} unigram_context;
 
-/* ------------------------------------------------------------
- * Внутренние функции для работы с контекстом и словами
- * ------------------------------------------------------------ */
+/* ------------------------------------------------------------------
+ * Структуры для биграмм (второй порядок)
+ * ------------------------------------------------------------------ */
+typedef struct bigram_transition {
+    int target_index;
+    int count;
+    struct bigram_transition *next;
+} bigram_transition;
 
-/**
- * @brief Инициализирует контекст парсинга (выделяет память под хеш-таблицу).
- * @param ctx указатель на контекст
- */
-static void init_context(parse_context *ctx) {
+typedef struct bigram_state {
+    char *key;
+    bigram_transition *transitions;
+} bigram_state;
+
+typedef struct bigram_node {
+    char *key;
+    int index;
+    struct bigram_node *next;
+} bigram_node;
+
+typedef struct {
+    bigram_state *states;
+    int state_count;
+    int state_capacity;
+    bigram_node **hash_table;
+} bigram_context;
+
+/* ------------------------------------------------------------------
+ * Функции для униграмм
+ * ------------------------------------------------------------------ */
+static void init_unigram(unigram_context *ctx) {
     ctx->words = NULL;
     ctx->word_count = 0;
     ctx->word_capacity = 0;
     ctx->hash_table = calloc(HASH_SIZE, sizeof(word_node *));
-    if (!ctx->hash_table) {
-        perror("calloc");
-        exit(1);
-    }
+    if (!ctx->hash_table) { perror("calloc"); exit(1); }
 }
 
-/**
- * @brief Освобождает всю память, занятую контекстом.
- * @param ctx указатель на контекст
- */
-static void free_context(parse_context *ctx) {
+static void free_unigram(unigram_context *ctx) {
     for (int i = 0; i < ctx->word_count; i++) {
         free(ctx->words[i].word);
         transition *t = ctx->words[i].transitions;
@@ -101,73 +108,45 @@ static void free_context(parse_context *ctx) {
         }
     }
     free(ctx->words);
-
     for (int i = 0; i < HASH_SIZE; i++) {
-        word_node *node = ctx->hash_table[i];
-        while (node) {
-            word_node *next = node->next;
-            free(node);
-            node = next;
+        word_node *n = ctx->hash_table[i];
+        while (n) {
+            word_node *next = n->next;
+            free(n);
+            n = next;
         }
     }
     free(ctx->hash_table);
 }
 
-/**
- * @brief Хеш-функция для строк (djb2-подобная).
- * @param s строка
- * @return хеш-значение в диапазоне [0, HASH_SIZE-1]
- */
 static unsigned int hash_str(const char *s) {
     unsigned int h = 0;
-    while (*s)
-        h = h * 31 + *s++;
+    while (*s) h = h * 31 + *s++;
     return h % HASH_SIZE;
 }
 
-/**
- * @brief Поиск слова в хеш-таблице.
- * @param ctx контекст
- * @param s строка для поиска
- * @return индекс слова, если найдено, иначе -1
- */
-static int find_word(parse_context *ctx, const char *s) {
+static int find_unigram(unigram_context *ctx, const char *s) {
     unsigned int h = hash_str(s);
-    word_node *node = ctx->hash_table[h];
-    while (node) {
-        if (strcmp(node->word, s) == 0)
-            return node->index;
-        node = node->next;
+    word_node *n = ctx->hash_table[h];
+    while (n) {
+        if (strcmp(n->word, s) == 0) return n->index;
+        n = n->next;
     }
     return -1;
 }
 
-/**
- * @brief Добавляет новое слово в контекст (если его ещё нет).
- * @param ctx контекст
- * @param s строка (копируется)
- * @return индекс добавленного или уже существующего слова
- */
-static int add_word(parse_context *ctx, const char *s) {
-    int idx = find_word(ctx, s);
-    if (idx != -1)
-        return idx;
+static int add_unigram(unigram_context *ctx, const char *s) {
+    int idx = find_unigram(ctx, s);
+    if (idx != -1) return idx;
 
-    /* Расширение массива слов при необходимости */
     if (ctx->word_count >= ctx->word_capacity) {
         ctx->word_capacity = ctx->word_capacity ? ctx->word_capacity * 2 : 16;
         ctx->words = realloc(ctx->words, ctx->word_capacity * sizeof(word_entry));
-        if (!ctx->words) {
-            perror("realloc");
-            exit(1);
-        }
+        if (!ctx->words) { perror("realloc"); exit(1); }
     }
 
     char *copy = malloc(strlen(s) + 1);
-    if (!copy) {
-        perror("malloc");
-        exit(1);
-    }
+    if (!copy) { perror("malloc"); exit(1); }
     strcpy(copy, s);
 
     ctx->words[ctx->word_count].word = copy;
@@ -175,10 +154,7 @@ static int add_word(parse_context *ctx, const char *s) {
 
     unsigned int h = hash_str(s);
     word_node *node = malloc(sizeof(word_node));
-    if (!node) {
-        perror("malloc");
-        exit(1);
-    }
+    if (!node) { perror("malloc"); exit(1); }
     node->word = copy;
     node->index = ctx->word_count;
     node->next = ctx->hash_table[h];
@@ -187,107 +163,281 @@ static int add_word(parse_context *ctx, const char *s) {
     return ctx->word_count++;
 }
 
-/**
- * @brief Добавляет переход от слова from к слову to (увеличивает счётчик).
- * @param ctx контекст
- * @param from индекс слова-источника
- * @param to   индекс слова-приёмника
- */
-static void add_transition(parse_context *ctx, int from, int to) {
+static void add_unigram_transition(unigram_context *ctx, int from, int to) {
     transition *t = ctx->words[from].transitions;
     while (t) {
-        if (t->target_index == to) {
-            t->count++;
-            return;
-        }
+        if (t->target_index == to) { t->count++; return; }
         t = t->next;
     }
     transition *new_t = malloc(sizeof(transition));
-    if (!new_t) {
-        perror("malloc");
-        exit(1);
-    }
+    if (!new_t) { perror("malloc"); exit(1); }
     new_t->target_index = to;
     new_t->count = 1;
     new_t->next = ctx->words[from].transitions;
     ctx->words[from].transitions = new_t;
 }
 
-/* ------------------------------------------------------------
- * Парсинг одного файла с возможностью одновременного заполнения глобального контекста
- * ------------------------------------------------------------ */
+/* ------------------------------------------------------------------
+ * Функции для биграмм
+ * ------------------------------------------------------------------ */
+static void init_bigram(bigram_context *ctx) {
+    ctx->states = NULL;
+    ctx->state_count = 0;
+    ctx->state_capacity = 0;
+    ctx->hash_table = calloc(HASH_SIZE, sizeof(bigram_node *));
+    if (!ctx->hash_table) { perror("calloc"); exit(1); }
+}
 
-/**
- * @brief Парсит входной поток и записывает таблицу частот в выходной поток.
- * Одновременно, если передан глобальный контекст, накапливает переходы в нём.
- * 
- * @param input     открытый FILE* для чтения (MD-файл)
- * @param output    открытый FILE* для записи локальной таблицы частот (может быть NULL, тогда только глобальное накопление)
- * @param global_ctx указатель на глобальный контекст (может быть NULL, тогда только локальная обработка)
- */
-static void parse_file(FILE *input, FILE *output, parse_context *global_ctx) {
-    parse_context local_ctx;
-    init_context(&local_ctx);
+static void free_bigram(bigram_context *ctx) {
+    for (int i = 0; i < ctx->state_count; i++) {
+        free(ctx->states[i].key);
+        bigram_transition *t = ctx->states[i].transitions;
+        while (t) {
+            bigram_transition *next = t->next;
+            free(t);
+            t = next;
+        }
+    }
+    free(ctx->states);
+    for (int i = 0; i < HASH_SIZE; i++) {
+        bigram_node *n = ctx->hash_table[i];
+        while (n) {
+            bigram_node *next = n->next;
+            free(n);
+            n = next;
+        }
+    }
+    free(ctx->hash_table);
+}
 
-    char word_buf[MAX_WORD_LEN];
+static unsigned int hash_key(const char *key) {
+    unsigned int h = 0;
+    while (*key) h = h * 31 + *key++;
+    return h % HASH_SIZE;
+}
+
+static int find_bigram_state(bigram_context *ctx, const char *key) {
+    unsigned int h = hash_key(key);
+    bigram_node *n = ctx->hash_table[h];
+    while (n) {
+        if (strcmp(n->key, key) == 0) return n->index;
+        n = n->next;
+    }
+    return -1;
+}
+
+static int add_bigram_state(bigram_context *ctx, const char *key) {
+    int idx = find_bigram_state(ctx, key);
+    if (idx != -1) return idx;
+
+    if (ctx->state_count >= ctx->state_capacity) {
+        ctx->state_capacity = ctx->state_capacity ? ctx->state_capacity * 2 : 16;
+        ctx->states = realloc(ctx->states, ctx->state_capacity * sizeof(bigram_state));
+        if (!ctx->states) { perror("realloc"); exit(1); }
+    }
+
+    char *copy = malloc(strlen(key) + 1);
+    if (!copy) { perror("malloc"); exit(1); }
+    strcpy(copy, key);
+
+    ctx->states[ctx->state_count].key = copy;
+    ctx->states[ctx->state_count].transitions = NULL;
+
+    unsigned int h = hash_key(key);
+    bigram_node *node = malloc(sizeof(bigram_node));
+    if (!node) { perror("malloc"); exit(1); }
+    node->key = copy;
+    node->index = ctx->state_count;
+    node->next = ctx->hash_table[h];
+    ctx->hash_table[h] = node;
+
+    return ctx->state_count++;
+}
+
+static void add_bigram_transition(bigram_context *ctx, int state_idx, int target_word_idx) {
+    bigram_transition *t = ctx->states[state_idx].transitions;
+    while (t) {
+        if (t->target_index == target_word_idx) { t->count++; return; }
+        t = t->next;
+    }
+    bigram_transition *new_t = malloc(sizeof(bigram_transition));
+    if (!new_t) { perror("malloc"); exit(1); }
+    new_t->target_index = target_word_idx;
+    new_t->count = 1;
+    new_t->next = ctx->states[state_idx].transitions;
+    ctx->states[state_idx].transitions = new_t;
+}
+
+/* ------------------------------------------------------------------
+ * Формирование ключа для биграммы
+ * ------------------------------------------------------------------ */
+static char* make_bigram_key(const unigram_context *uni, int idx1, int idx2) {
+    char *key = malloc(2 * MAX_WORD_LEN + 2);
+    if (!key) { perror("malloc"); exit(1); }
+    sprintf(key, "%s|%s", uni->words[idx1].word, uni->words[idx2].word);
+    return key;
+}
+
+/* ------------------------------------------------------------------
+ * Обнаружение маркдаун-структуры
+ * ------------------------------------------------------------------ */
+static const char* detect_markdown_token(const char *line) {
+    while (isspace(*line)) line++;
+    if (*line == '#') return "<H>";
+    if (*line == '-' || *line == '*' || *line == '+') return "<LI>";
+    if (*line == '>') return "<BLOCKQUOTE>";
+    return NULL;
+}
+
+/* ------------------------------------------------------------------
+ * Обработка одной строки: извлечение токенов и обновление контекстов
+ * ------------------------------------------------------------------ */
+static void process_line(const char *line, unigram_context *uni, bigram_context *bi,
+                         int *prev1, int *prev2, int *sentence_start) {
+    const char *md_token = detect_markdown_token(line);
+    if (md_token) {
+        int token_idx = add_unigram(uni, md_token);
+        if (*prev1 != -1 && *prev2 != -1) {
+            char *key = make_bigram_key(uni, *prev2, *prev1);
+            int state_idx = add_bigram_state(bi, key);
+            add_bigram_transition(bi, state_idx, token_idx);
+            free(key);
+        }
+        *prev2 = *prev1;
+        *prev1 = token_idx;
+        *sentence_start = 0;
+    }
+
+    const char *p = line;
+    char token[MAX_WORD_LEN];
     int pos = 0;
-    int c;
-    int prev_local = -1;
-    int prev_global = -1;
+    int in_word = 0;
 
-    while ((c = fgetc(input)) != EOF) {
-        if (isalpha(c)) {
+    while (*p) {
+        if (isalpha(*p) || isdigit(*p)) {
             if (pos < MAX_WORD_LEN - 1) {
-                word_buf[pos++] = tolower(c);
+                token[pos++] = *p;
+                in_word = 1;
             }
         } else {
-            if (pos > 0) {
-                word_buf[pos] = '\0';
-                int cur_local = add_word(&local_ctx, word_buf);
-                int cur_global = -1;
-                if (global_ctx) {
-                    cur_global = add_word(global_ctx, word_buf);
-                }
-
-                if (prev_local != -1) {
-                    add_transition(&local_ctx, prev_local, cur_local);
-                    if (global_ctx && prev_global != -1) {
-                        add_transition(global_ctx, prev_global, cur_global);
+            if (in_word) {
+                token[pos] = '\0';
+                if (*sentence_start) {
+                    int bos_idx = add_unigram(uni, "<BOS>");
+                    if (*prev1 != -1 && *prev2 != -1) {
+                        char *key = make_bigram_key(uni, *prev2, *prev1);
+                        int state_idx = add_bigram_state(bi, key);
+                        add_bigram_transition(bi, state_idx, bos_idx);
+                        free(key);
                     }
+                    *prev2 = *prev1;
+                    *prev1 = bos_idx;
+                    *sentence_start = 0;
                 }
-
-                prev_local = cur_local;
-                prev_global = cur_global;
+                int word_idx = add_unigram(uni, token);
+                if (*prev1 != -1) {
+                    add_unigram_transition(uni, *prev1, word_idx);
+                }
+                if (*prev1 != -1 && *prev2 != -1) {
+                    char *key = make_bigram_key(uni, *prev2, *prev1);
+                    int state_idx = add_bigram_state(bi, key);
+                    add_bigram_transition(bi, state_idx, word_idx);
+                    free(key);
+                }
+                *prev2 = *prev1;
+                *prev1 = word_idx;
                 pos = 0;
+                in_word = 0;
+            }
+
+            if (strchr(".,!?;:-", *p)) {
+                char punct[2] = {*p, '\0'};
+                int punct_idx = add_unigram(uni, punct);
+                if (*prev1 != -1) {
+                    add_unigram_transition(uni, *prev1, punct_idx);
+                }
+                if (*prev1 != -1 && *prev2 != -1) {
+                    char *key = make_bigram_key(uni, *prev2, *prev1);
+                    int state_idx = add_bigram_state(bi, key);
+                    add_bigram_transition(bi, state_idx, punct_idx);
+                    free(key);
+                }
+                *prev2 = *prev1;
+                *prev1 = punct_idx;
+
+                if (*p == '.' || *p == '!' || *p == '?') {
+                    int eos_idx = add_unigram(uni, "<EOS>");
+                    if (*prev1 != -1) {
+                        add_unigram_transition(uni, *prev1, eos_idx);
+                    }
+                    if (*prev1 != -1 && *prev2 != -1) {
+                        char *key = make_bigram_key(uni, *prev2, *prev1);
+                        int state_idx = add_bigram_state(bi, key);
+                        add_bigram_transition(bi, state_idx, eos_idx);
+                        free(key);
+                    }
+                    *prev2 = *prev1;
+                    *prev1 = eos_idx;
+                    *sentence_start = 1;
+                }
             }
         }
-    }
-    if (pos > 0) {
-        word_buf[pos] = '\0';
-        int cur_local = add_word(&local_ctx, word_buf);
-        int cur_global = -1;
-        if (global_ctx) {
-            cur_global = add_word(global_ctx, word_buf);
-        }
-        if (prev_local != -1) {
-            add_transition(&local_ctx, prev_local, cur_local);
-            if (global_ctx && prev_global != -1) {
-                add_transition(global_ctx, prev_global, cur_global);
-            }
-        }
-        /* последнее слово не обновляем, т.к. после него нет перехода */
+        p++;
     }
 
-    /* Если задан выходной поток, записываем локальную таблицу частот */
+    if (in_word) {
+        token[pos] = '\0';
+        if (*sentence_start) {
+            int bos_idx = add_unigram(uni, "<BOS>");
+            if (*prev1 != -1 && *prev2 != -1) {
+                char *key = make_bigram_key(uni, *prev2, *prev1);
+                int state_idx = add_bigram_state(bi, key);
+                add_bigram_transition(bi, state_idx, bos_idx);
+                free(key);
+            }
+            *prev2 = *prev1;
+            *prev1 = bos_idx;
+            *sentence_start = 0;
+        }
+        int word_idx = add_unigram(uni, token);
+        if (*prev1 != -1) {
+            add_unigram_transition(uni, *prev1, word_idx);
+        }
+        if (*prev1 != -1 && *prev2 != -1) {
+            char *key = make_bigram_key(uni, *prev2, *prev1);
+            int state_idx = add_bigram_state(bi, key);
+            add_bigram_transition(bi, state_idx, word_idx);
+            free(key);
+        }
+        *prev2 = *prev1;
+        *prev1 = word_idx;
+    }
+}
+
+/* ------------------------------------------------------------------
+ * Парсинг одного файла
+ * ------------------------------------------------------------------ */
+static void parse_file(FILE *input, FILE *output, unigram_context *uni, bigram_context *bi) {
+    char line[4096];
+    int prev1 = -1, prev2 = -1;
+    int sentence_start = 1;
+
+    while (fgets(line, sizeof(line), input)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
+        process_line(line, uni, bi, &prev1, &prev2, &sentence_start);
+    }
+
+    // Запись локальной таблицы (униграммы) в output
     if (output) {
-        for (int i = 0; i < local_ctx.word_count; i++) {
-            fprintf(output, "%s -> ", local_ctx.words[i].word);
-            transition *t = local_ctx.words[i].transitions;
+        for (int i = 0; i < uni->word_count; i++) {
+            fprintf(output, "%s -> ", uni->words[i].word);
+            transition *t = uni->words[i].transitions;
             if (!t) {
                 fprintf(output, "(no transitions)\n");
             } else {
                 while (t) {
-                    fprintf(output, "%s(%d)", local_ctx.words[t->target_index].word, t->count);
+                    fprintf(output, "%s(%d)", uni->words[t->target_index].word, t->count);
                     t = t->next;
                     if (t) fprintf(output, ", ");
                 }
@@ -295,19 +445,78 @@ static void parse_file(FILE *input, FILE *output, parse_context *global_ctx) {
             }
         }
     }
-
-    free_context(&local_ctx);
 }
 
-/* ------------------------------------------------------------
- * Вспомогательные функции для работы с файловой системой
- * ------------------------------------------------------------ */
+/* ------------------------------------------------------------------
+ * Запись глобальных таблиц с вероятностями (сглаженными)
+ * ------------------------------------------------------------------ */
+static void write_unigram_table(const unigram_context *uni, const char *output_dir) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", output_dir, UNIGRAM_TABLE);
+    FILE *out = fopen(path, "w");
+    if (!out) { perror("fopen unigram output"); return; }
 
-/**
- * @brief Создаёт директорию, если она не существует.
- * @param path путь к директории
- * @note В случае ошибки программа завершается через exit().
- */
+    int total_words = uni->word_count;
+    for (int i = 0; i < uni->word_count; i++) {
+        const word_entry *we = &uni->words[i];
+        fprintf(out, "%s -> ", we->word);
+
+        if (!we->transitions) {
+            fprintf(out, "(no transitions)\n");
+            continue;
+        }
+
+        int sum = 0;
+        transition *t = we->transitions;
+        while (t) { sum += t->count; t = t->next; }
+
+        t = we->transitions;
+        while (t) {
+            double prob = (double)(t->count + SMOOTHING_ALPHA) / (sum + SMOOTHING_ALPHA * total_words);
+            fprintf(out, "%s(%.4f)", uni->words[t->target_index].word, prob);
+            t = t->next;
+            if (t) fprintf(out, ", ");
+        }
+        fprintf(out, "\n");
+    }
+    fclose(out);
+}
+
+static void write_bigram_table(const bigram_context *bi, const unigram_context *uni, const char *output_dir) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", output_dir, BIGRAM_TABLE);
+    FILE *out = fopen(path, "w");
+    if (!out) { perror("fopen bigram output"); return; }
+
+    int total_words = uni->word_count;
+    for (int i = 0; i < bi->state_count; i++) {
+        const bigram_state *st = &bi->states[i];
+        fprintf(out, "%s -> ", st->key);
+
+        if (!st->transitions) {
+            fprintf(out, "(no transitions)\n");
+            continue;
+        }
+
+        int sum = 0;
+        bigram_transition *t = st->transitions;
+        while (t) { sum += t->count; t = t->next; }
+
+        t = st->transitions;
+        while (t) {
+            double prob = (double)(t->count + SMOOTHING_ALPHA) / (sum + SMOOTHING_ALPHA * total_words);
+            fprintf(out, "%s(%.4f)", uni->words[t->target_index].word, prob);
+            t = t->next;
+            if (t) fprintf(out, ", ");
+        }
+        fprintf(out, "\n");
+    }
+    fclose(out);
+}
+
+/* ------------------------------------------------------------------
+ * Вспомогательные функции для работы с директориями
+ * ------------------------------------------------------------------ */
 static void ensure_dir(const char *path) {
     struct stat st;
     if (stat(path, &st) == -1) {
@@ -325,112 +534,40 @@ static void ensure_dir(const char *path) {
     }
 }
 
-/**
- * @brief Формирует путь к выходному файлу, заменяя расширение на .txt.
- * @param out_dir      выходная директория
- * @param in_filename  полное имя входного файла (может содержать путь)
- * @return указатель на динамически выделенную строку с путём (надо освободить free())
- */
-static char *make_output_path(const char *out_dir, const char *in_filename) {
+static char* make_output_path(const char *out_dir, const char *in_filename) {
     const char *base = strrchr(in_filename, '/');
     if (!base) base = in_filename;
     else base++;
 
     char *name_copy = strdup(base);
-    if (!name_copy) {
-        perror("strdup");
-        exit(1);
-    }
+    if (!name_copy) { perror("strdup"); exit(1); }
     char *dot = strrchr(name_copy, '.');
     if (dot) *dot = '\0';
 
-    size_t out_len = strlen(out_dir) + strlen(name_copy) + 5;
+    size_t out_len = strlen(out_dir) + strlen(name_copy) + 6;
     char *out_path = malloc(out_len);
-    if (!out_path) {
-        perror("malloc");
-        exit(1);
-    }
+    if (!out_path) { perror("malloc"); exit(1); }
     snprintf(out_path, out_len, "%s/%s.txt", out_dir, name_copy);
     free(name_copy);
     return out_path;
 }
 
-/* ------------------------------------------------------------
- * Запись глобальной таблицы с вероятностями
- * ------------------------------------------------------------ */
-
-/**
- * @brief Записывает глобальную таблицу вероятностей переходов в файл.
- * @param global_ctx глобальный контекст с накопленными переходами
- * @param output_dir выходная директория
- * @param filename   имя файла для записи (обычно GLOBAL_TABLE_NAME)
- */
-static void write_global_table(const parse_context *global_ctx, const char *output_dir, const char *filename) {
-    char *path = malloc(strlen(output_dir) + strlen(filename) + 2);
-    if (!path) {
-        perror("malloc");
-        exit(1);
-    }
-    sprintf(path, "%s/%s", output_dir, filename);
-
-    FILE *out = fopen(path, "w");
-    if (!out) {
-        perror("fopen global output");
-        free(path);
-        return;
-    }
-
-    for (int i = 0; i < global_ctx->word_count; i++) {
-        const word_entry *we = &global_ctx->words[i];
-        fprintf(out, "%s -> ", we->word);
-
-        if (!we->transitions) {
-            fprintf(out, "(no transitions)\n");
-            continue;
-        }
-
-        /* Подсчёт общей суммы переходов из данного слова */
-        int total = 0;
-        transition *t = we->transitions;
-        while (t) {
-            total += t->count;
-            t = t->next;
-        }
-
-        /* Вывод каждого перехода с вероятностью */
-        t = we->transitions;
-        while (t) {
-            double prob = (double)t->count / total;
-            fprintf(out, "%s(%.4f)", global_ctx->words[t->target_index].word, prob);
-            t = t->next;
-            if (t) fprintf(out, ", ");
-        }
-        fprintf(out, "\n");
-    }
-
-    fclose(out);
-    free(path);
-}
-
-/* ------------------------------------------------------------
- * Экспортируемая функция
- * ------------------------------------------------------------ */
-
-/**
- * @brief Основная функция: обрабатывает все .md файлы из input_dir и пишет в output_dir.
- * Дополнительно создаёт глобальную таблицу вероятностей.
- */
+/* ------------------------------------------------------------------
+ * Основная экспортируемая функция
+ * ------------------------------------------------------------------ */
 void process_markdown_files(const char *input_dir, const char *output_dir) {
     ensure_dir(output_dir);
 
-    /* Инициализация глобального контекста */
-    parse_context global_ctx;
-    init_context(&global_ctx);
+    unigram_context uni;
+    bigram_context bi;
+    init_unigram(&uni);
+    init_bigram(&bi);
 
     DIR *dir = opendir(input_dir);
     if (!dir) {
         perror("opendir");
-        free_context(&global_ctx);
+        free_unigram(&uni);
+        free_bigram(&bi);
         return;
     }
 
@@ -441,23 +578,15 @@ void process_markdown_files(const char *input_dir, const char *output_dir) {
         if (len < 4) continue;
         if (strcasecmp(name + len - 3, ".md") != 0) continue;
 
-        /* Полный путь к входному файлу */
         size_t in_len = strlen(input_dir) + len + 2;
         char *in_path = malloc(in_len);
-        if (!in_path) {
-            perror("malloc");
-            continue;
-        }
+        if (!in_path) { perror("malloc"); continue; }
         snprintf(in_path, in_len, "%s/%s", input_dir, name);
 
         FILE *in_file = fopen(in_path, "r");
         free(in_path);
-        if (!in_file) {
-            perror("fopen input");
-            continue;
-        }
+        if (!in_file) { perror("fopen input"); continue; }
 
-        /* Путь к выходному файлу для локальной таблицы */
         char *out_path = make_output_path(output_dir, name);
         printf("Обработан: %s -> %s\n", name, out_path);
 
@@ -469,8 +598,7 @@ void process_markdown_files(const char *input_dir, const char *output_dir) {
             continue;
         }
 
-        /* Парсим файл, записываем локальную таблицу и накапливаем глобальную */
-        parse_file(in_file, out_file, &global_ctx);
+        parse_file(in_file, out_file, &uni, &bi);
 
         fclose(in_file);
         fclose(out_file);
@@ -478,9 +606,10 @@ void process_markdown_files(const char *input_dir, const char *output_dir) {
 
     closedir(dir);
 
-    /* После обработки всех файлов записываем глобальную таблицу вероятностей */
-    write_global_table(&global_ctx, output_dir, GLOBAL_TABLE_NAME);
-    printf("Глобальная таблица сохранена в %s/%s\n", output_dir, GLOBAL_TABLE_NAME);
+    write_unigram_table(&uni, output_dir);
+    write_bigram_table(&bi, &uni, output_dir);
+    printf("Глобальные таблицы сохранены в %s/\n", output_dir);
 
-    free_context(&global_ctx);
+    free_unigram(&uni);
+    free_bigram(&bi);
 }
