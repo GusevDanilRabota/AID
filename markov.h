@@ -1,51 +1,57 @@
 /**
  * @file markov.h
- * @brief Генератор текста на основе цепей Маркова (униграммы и биграммы).
- *
- * Загружает таблицы вероятностей из файлов, созданных парсером,
- * и генерирует случайный текст, начиная с заданного токена.
- * Поддерживает температурный параметр для контроля случайности.
+ * @brief Генератор текста на основе цепей Маркова с экспортом в Markdown.
  */
 
 #ifndef MARKOV_H
 #define MARKOV_H
 
-#include <stddef.h>   // для size_t
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * @brief Загружает униграммную таблицу из файла.
- * @param filename путь к файлу (например, "output/global_unigram.txt")
- * @return 0 при успехе, -1 при ошибке
+ * @brief Опции для генерации одного блока текста.
+ */
+typedef struct {
+    int order;                /**< 0 – униграммы, 1 – биграммы */
+    double temperature;       /**< Температура (0.0 – детерминированно) */
+    int max_tokens;           /**< Максимальное количество токенов в блоке */
+    const char *start_token;  /**< Начальный токен (если NULL, используется <BOS>) */
+} MarkovGenOptions;
+
+/**
+ * @brief Загружает униграммную таблицу.
  */
 int markov_load_unigram(const char *filename);
 
 /**
- * @brief Загружает биграммную таблицу из файла.
- * @param filename путь к файлу (например, "output/global_bigram.txt")
- * @return 0 при успехе, -1 при ошибке
+ * @brief Загружает биграммную таблицу.
  */
 int markov_load_bigram(const char *filename);
 
 /**
- * @brief Генерирует текст на основе загруженных таблиц.
- *
- * @param buffer       выходной буфер (должен быть достаточно большим)
- * @param buf_size     размер буфера
- * @param max_tokens   максимальное количество токенов для генерации
- * @param temperature  параметр случайности (0.0 – детерминированно, 1.0 – нормально, >1 – более хаотично)
- * @param use_bigram   1 – использовать биграммы (второй порядок), 0 – униграммы
- * @param start_token  начальный токен (например, "<BOS>" или конкретное слово)
- * @return количество сгенерированных токенов (не включая начальный), или -1 при ошибке
+ * @brief Генерирует текст в буфер.
  */
 int markov_generate(char *buffer, size_t buf_size, int max_tokens,
                     double temperature, int use_bigram, const char *start_token);
 
 /**
- * @brief Освобождает память, занятую загруженными таблицами.
+ * @brief Генерирует Markdown-файл с несколькими блоками текста.
+ *
+ * @param filename    путь к выходному .md файлу
+ * @param title       заголовок документа (если NULL, заголовок не создаётся)
+ * @param num_blocks  количество генерируемых блоков (абзацев/разделов)
+ * @param options     массив опций для каждого блока (должен содержать num_blocks элементов)
+ * @return 0 при успехе, -1 при ошибке
+ */
+int markov_generate_md_file(const char *filename, const char *title,
+                            int num_blocks, const MarkovGenOptions *options);
+
+/**
+ * @brief Освобождает память, занятую таблицами.
  */
 void markov_free(void);
 

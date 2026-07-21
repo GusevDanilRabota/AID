@@ -1,29 +1,27 @@
 /**
  * @file main.c
- * @brief Главный файл: парсинг .md файлов и генерация текста с записью в файл.
+ * @brief Парсинг .md файлов, генерация текста и сохранение в .md файлы.
  */
 
 #include "md_parser.h"
 #include "markov.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 #ifdef _WIN32
-#include <windows.h>   // для SetConsoleOutputCP
+#include <windows.h>
 #endif
 
 int main(void) {
 #ifdef _WIN32
-    // Устанавливаем кодировку UTF-8 для консоли Windows (чтобы корректно отображать русские буквы, если они всё же появятся)
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
-    // 1. Parsing Markdown files
+    // 1. Парсинг Markdown-файлов
     printf("=== Parsing Markdown files ===\n");
     process_markdown_files("input", "output");
 
-    // 2. Load global tables
+    // 2. Загрузка таблиц
     printf("\n=== Loading tables ===\n");
     if (markov_load_unigram("output/global_unigram.txt") != 0) {
         fprintf(stderr, "Error loading unigram table\n");
@@ -35,52 +33,37 @@ int main(void) {
         return 1;
     }
 
-    // 3. Generate text
-    printf("\n=== Generating text ===\n");
+    // 3. Генерация и сохранение в .md файлы
+    printf("\n=== Generating Markdown files ===\n");
 
-    char buffer[4096];
-    int tokens;
-    FILE *outfile = fopen("output/dialog.txt", "w");
-    if (!outfile) {
-        perror("fopen output/dialog.txt");
-        outfile = stdout; // fallback to console
+    // 3.1. Генерация документа с несколькими блоками
+    MarkovGenOptions options[] = {
+        {0, 0.8, 30, "<BOS>"},   // униграммы, T=0.8
+        {1, 0.9, 30, "The"},     // биграммы, T=0.9
+        {0, 0.01, 20, "hello"},  // детерминированный
+        {1, 0.7, 25, "Once"}     // биграммы, T=0.7
+    };
+    int num_blocks = sizeof(options) / sizeof(options[0]);
+
+    if (markov_generate_md_file("output/generated_text.md", "Сгенерированный текст", num_blocks, options) != 0) {
+        fprintf(stderr, "Error generating Markdown file\n");
+    } else {
+        printf("Generated text saved to output/generated_text.md\n");
     }
 
-    // Generate with unigrams, temperature 0.8, start <BOS>
-    tokens = markov_generate(buffer, sizeof(buffer), 30, 0.8, 0, "<BOS>");
-    printf("\nUnigram (T=0.8):\n%s\n", buffer);
-    printf("Generated tokens: %d\n", tokens);
-    if (outfile != stdout) {
-        fprintf(outfile, "=== Unigram (T=0.8) ===\n%s\n\n", buffer);
-    }
-
-    // Generate with bigrams, temperature 0.9, start "The"
-    tokens = markov_generate(buffer, sizeof(buffer), 30, 0.9, 1, "The");
-    printf("\nBigram (T=0.9, start='The'):\n%s\n", buffer);
-    printf("Generated tokens: %d\n", tokens);
-    if (outfile != stdout) {
-        fprintf(outfile, "=== Bigram (T=0.9, start='The') ===\n%s\n\n", buffer);
-    }
-
-    // Deterministic mode (temperature 0.01)
-    tokens = markov_generate(buffer, sizeof(buffer), 20, 0.01, 0, "hello");
-    printf("\nDeterministic (T=0.01):\n%s\n", buffer);
-    printf("Generated tokens: %d\n", tokens);
-    if (outfile != stdout) {
-        fprintf(outfile, "=== Deterministic (T=0.01) ===\n%s\n\n", buffer);
-    }
-
-    // Additional: generate with a different start token
-    tokens = markov_generate(buffer, sizeof(buffer), 25, 0.7, 1, "Once");
-    printf("\nBigram (T=0.7, start='Once'):\n%s\n", buffer);
-    printf("Generated tokens: %d\n", tokens);
-    if (outfile != stdout) {
-        fprintf(outfile, "=== Bigram (T=0.7, start='Once') ===\n%s\n\n", buffer);
-    }
-
-    if (outfile != stdout) {
-        fclose(outfile);
-        printf("\nGenerated text saved to output/dialog.txt\n");
+    // 3.2. Дополнительно можно сгенерировать отдельный файл с одним большим текстом
+    char buffer[8192];
+    int tokens = markov_generate(buffer, sizeof(buffer), 100, 0.85, 1, "<BOS>");
+    if (tokens > 0) {
+        FILE *f = fopen("output/long_generated.md", "w");
+        if (f) {
+            fprintf(f, "# Длинный сгенерированный текст\n\n");
+            fprintf(f, "%s\n", buffer);
+            fclose(f);
+            printf("Long generated text saved to output/long_generated.md\n");
+        } else {
+            perror("fopen long_generated.md");
+        }
     }
 
     markov_free();

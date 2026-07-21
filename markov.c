@@ -498,3 +498,59 @@ void markov_free(void) {
     unigram_count = 0;
     bigram_count = 0;
 }
+
+/* ------------------------------------------------------------------
+ * Генерация Markdown-файла
+ * ------------------------------------------------------------------ */
+
+/**
+ * @brief Генерирует один блок текста с заданными опциями.
+ */
+static int generate_block(char *buffer, size_t buf_size, const MarkovGenOptions *opt) {
+    return markov_generate(buffer, buf_size, opt->max_tokens,
+                           opt->temperature, opt->order, opt->start_token);
+}
+
+int markov_generate_md_file(const char *filename, const char *title,
+                            int num_blocks, const MarkovGenOptions *options) {
+    if (!filename || num_blocks <= 0 || !options) {
+        fprintf(stderr, "Invalid arguments for markov_generate_md_file\n");
+        return -1;
+    }
+
+    FILE *f = fopen(filename, "w");
+    if (!f) {
+        perror("fopen");
+        return -1;
+    }
+
+    // Записываем заголовок документа, если задан
+    if (title) {
+        fprintf(f, "# %s\n\n", title);
+    }
+
+    // Для каждого блока генерируем текст и записываем с подзаголовком
+    char buffer[8192];
+    for (int i = 0; i < num_blocks; i++) {
+        const MarkovGenOptions *opt = &options[i];
+        // Определяем тип блока: можно чередовать заголовки разных уровней
+        // Для простоты сделаем заголовки уровня 2 для каждого блока
+        fprintf(f, "## Блок %d", i + 1);
+        // Добавляем информацию о параметрах генерации (опционально)
+        fprintf(f, " (порядок=%d, T=%.2f, макс. токенов=%d)\n\n",
+                opt->order, opt->temperature, opt->max_tokens);
+
+        // Генерируем текст
+        int tokens = generate_block(buffer, sizeof(buffer), opt);
+        if (tokens < 0) {
+            fprintf(stderr, "Ошибка генерации блока %d\n", i);
+            fclose(f);
+            return -1;
+        }
+        // Записываем сгенерированный текст (он уже содержит пробелы)
+        fprintf(f, "%s\n\n", buffer);
+    }
+
+    fclose(f);
+    return 0;
+}
