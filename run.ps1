@@ -1,23 +1,12 @@
 <#
 .SYNOPSIS
-    Сборка и запуск markov_processor с очисткой старых данных.
+    Сборка, тестирование и запуск markov_processor.
 .DESCRIPTION
-    Компилирует проект (если необходимо), удаляет папки output и result,
-    создаёт их заново, затем запускает программу.
-    Если аргументы не указаны, по умолчанию запускается интерактивный режим.
+    Автоматически собирает тесты, запускает их, затем компилирует и запускает основную программу.
 .PARAMETER Arguments
     Аргументы командной строки для markov_processor.
 .PARAMETER Rebuild
-    Принудительная пересборка проекта.
-.EXAMPLE
-    .\run.ps1
-    Запускает интерактивный режим с очисткой.
-.EXAMPLE
-    .\run.ps1 --generate --order 2
-    Запускает генерацию с биграммами.
-.EXAMPLE
-    .\run.ps1 --rebuild --interactive
-    Пересобирает и запускает интерактивный режим.
+    Принудительная пересборка всех компонентов.
 #>
 
 param(
@@ -26,88 +15,147 @@ param(
     [switch]$Rebuild
 )
 
-# Цвета для вывода
+# Цвета
 $Green = "Green"
 $Yellow = "Yellow"
 $Red = "Red"
 $Cyan = "Cyan"
 
 # Пути
-$sourceDir = ".\src"
+$srcDir = ".\src"
+$testDir = ".\tests"
 $outputDir = ".\output"
 $resultDir = ".\result"
 $executable = ".\markov_processor.exe"
 
-# Проверяем наличие исходников
-if (-not (Test-Path $sourceDir)) {
-    Write-Host "Ошибка: Папка src не найдена." -ForegroundColor $Red
-    exit 1
+# Функция компиляции теста
+function Build-Test {
+    param($TestName, $Sources)
+    $outExe = "$TestName.exe"
+    $cmd = "gcc -std=c99 -Wall -Wextra -I $srcDir -o $outExe $Sources -lm"
+    Write-Host "Сборка $TestName..." -ForegroundColor $Yellow
+    Invoke-Expression $cmd
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Ошибка сборки теста $TestName" -ForegroundColor $Red
+        exit $LASTEXITCODE
+    }
+    return $outExe
 }
 
-# Функция компиляции
-function Build-Project {
-    Write-Host "Компиляция проекта..." -ForegroundColor $Yellow
+# Функция запуска теста (исправлена)
+function Run-Test {
+    param($TestExe)
+    Write-Host "Запуск $TestExe..." -ForegroundColor $Cyan
+    & ".\$TestExe"   # добавляем ".\" для выполнения из текущей папки
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Тест $TestExe завершился с ошибкой (код $LASTEXITCODE)" -ForegroundColor $Red
+        exit $LASTEXITCODE
+    } else {
+        Write-Host "$TestExe успешно пройден." -ForegroundColor $Green
+    }
+}
+
+# Функция компиляции основной программы
+function Build-Main {
+    Write-Host "Компиляция основной программы..." -ForegroundColor $Yellow
     $sources = @(
-        "$sourceDir\main.c",
-        "$sourceDir\ngram_model.c",
-        "$sourceDir\tokenizer.c",
-        "$sourceDir\c_parser.c",
-        "$sourceDir\md_parser.c",
-        "$sourceDir\markov.c",
-        "$sourceDir\interactive.c"
+        "$srcDir\main.c",
+        "$srcDir\ngram_model.c",
+        "$srcDir\tokenizer.c",
+        "$srcDir\c_parser.c",
+        "$srcDir\md_parser.c",
+        "$srcDir\markov.c",
+        "$srcDir\interactive.c",
+        "$srcDir\utils.c"
     )
-    $cmd = "gcc -std=c99 -Wall -Wextra -I $sourceDir -o $executable $($sources -join ' ') -lm"
+    $cmd = "gcc -std=c99 -Wall -Wextra -I $srcDir -o $executable $($sources -join ' ') -lm"
     Write-Host "Выполняется: $cmd" -ForegroundColor $Cyan
     Invoke-Expression $cmd
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Ошибка компиляции!" -ForegroundColor $Red
+        Write-Host "Ошибка компиляции основной программы!" -ForegroundColor $Red
         exit $LASTEXITCODE
     }
-    Write-Host "Компиляция успешна." -ForegroundColor $Green
+    Write-Host "Основная программа собрана успешно." -ForegroundColor $Green
 }
 
-# Проверяем необходимость компиляции
-if ($Rebuild) {
-    Write-Host "Принудительная пересборка..." -ForegroundColor $Yellow
-    Build-Project
-} elseif (-not (Test-Path $executable)) {
-    Write-Host "Исполняемый файл не найден. Выполняется сборка..." -ForegroundColor $Yellow
-    Build-Project
-} else {
-    # Проверяем, не изменились ли исходники (по времени модификации)
-    $srcTime = (Get-ChildItem $sourceDir -Recurse -Include *.c, *.h | Measure-Object -Maximum LastWriteTime).Maximum
-    $exeTime = (Get-Item $executable).LastWriteTime
-    if ($srcTime -gt $exeTime) {
-        Write-Host "Исходники новее исполняемого файла. Пересборка..." -ForegroundColor $Yellow
-        Build-Project
+# ---- 1. Сборка и запуск тестов ----
+Write-Host "=== СБОРКА И ЗАПУСК ТЕСТОВ ===" -ForegroundColor $Yellow
+
+$tests = @(
+    @{Name="test_ngram"; Sources=@("$testDir\test_ngram.c", "$srcDir\ngram_model.c")},
+    @{Name="test_tokenizer"; Sources=@("$testDir\test_tokenizer.c", "$srcDir\tokenizer.c")},
+    @{Name="test_c_parser"; Sources=@("$testDir\test_c_parser.c", "$srcDir\c_parser.c", "$srcDir\tokenizer.c", "$srcDir\ngram_model.c", "$srcDir\utils.c")},
+    @{Name="test_md_parser"; Sources=@("$testDir\test_md_parser.c", "$srcDir\md_parser.c", "$srcDir\ngram_model.c", "$srcDir\utils.c")},
+    @{Name="test_markov"; Sources=@("$testDir\test_markov.c", "$srcDir\markov.c", "$srcDir\ngram_model.c", "$srcDir\utils.c")},
+    @{Name="test_interactive"; Sources=@("$testDir\test_interactive.c", "$srcDir\interactive.c", "$srcDir\markov.c", "$srcDir\ngram_model.c", "$srcDir\utils.c")}
+)
+
+foreach ($test in $tests) {
+    $exe = "$($test.Name).exe"
+    $needRebuild = $Rebuild
+    if (-not $needRebuild) {
+        $srcTime = (Get-ChildItem $test.Sources -ErrorAction SilentlyContinue | Measure-Object -Maximum LastWriteTime).Maximum
+        if ($srcTime -and (Test-Path $exe)) {
+            $exeTime = (Get-Item $exe).LastWriteTime
+            if ($srcTime -gt $exeTime) { $needRebuild = $true }
+        } elseif (-not (Test-Path $exe)) {
+            $needRebuild = $true
+        }
+    }
+    if ($needRebuild) {
+        $built = Build-Test -TestName $test.Name -Sources ($test.Sources -join ' ')
     } else {
-        Write-Host "Исполняемый файл актуален." -ForegroundColor $Green
+        $built = $exe
+    }
+    Run-Test $built
+}
+
+# ---- 2. Сборка основной программы ----
+Write-Host "`n=== СБОРКА ОСНОВНОЙ ПРОГРАММЫ ===" -ForegroundColor $Yellow
+$mainSources = @(
+    "$srcDir\main.c",
+    "$srcDir\ngram_model.c",
+    "$srcDir\tokenizer.c",
+    "$srcDir\c_parser.c",
+    "$srcDir\md_parser.c",
+    "$srcDir\markov.c",
+    "$srcDir\interactive.c",
+    "$srcDir\utils.c"
+)
+$needRebuildMain = $Rebuild
+if (-not $needRebuildMain) {
+    $srcTime = (Get-ChildItem $mainSources -ErrorAction SilentlyContinue | Measure-Object -Maximum LastWriteTime).Maximum
+    if ($srcTime -and (Test-Path $executable)) {
+        $exeTime = (Get-Item $executable).LastWriteTime
+        if ($srcTime -gt $exeTime) { $needRebuildMain = $true }
+    } elseif (-not (Test-Path $executable)) {
+        $needRebuildMain = $true
     }
 }
+if ($needRebuildMain) {
+    Build-Main
+} else {
+    Write-Host "Основная программа уже собрана, пропускаем сборку." -ForegroundColor $Green
+}
 
-# Очистка старых данных
-Write-Host "Удаление старых папок output и result..." -ForegroundColor $Yellow
+# ---- 3. Очистка старых данных ----
+Write-Host "`n=== ОЧИСТКА СТАРЫХ ВЫХОДНЫХ ДАННЫХ ===" -ForegroundColor $Yellow
 if (Test-Path $outputDir) { Remove-Item -Path $outputDir -Recurse -Force }
 if (Test-Path $resultDir) { Remove-Item -Path $resultDir -Recurse -Force }
-
-# Создание папок заново
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
 
-# Формируем аргументы для запуска
+# ---- 4. Запуск основной программы ----
+Write-Host "`n=== ЗАПУСК ОСНОВНОЙ ПРОГРАММЫ ===" -ForegroundColor $Yellow
 $runArgs = @()
 if ($Arguments.Count -eq 0) {
-    # По умолчанию интерактивный режим с параметрами
     $runArgs = @("--interactive", "--order", "1", "--temp", "0.8")
-    Write-Host "Аргументы не указаны. Запуск в интерактивном режиме (--interactive)." -ForegroundColor $Yellow
+    Write-Host "Аргументы не указаны. Запуск в интерактивном режиме." -ForegroundColor $Yellow
 } else {
     $runArgs = $Arguments
 }
-
-# Запуск программы
 Write-Host "Запуск: $executable $($runArgs -join ' ')" -ForegroundColor $Cyan
 & $executable $runArgs
-
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Программа завершена успешно." -ForegroundColor $Green
 } else {

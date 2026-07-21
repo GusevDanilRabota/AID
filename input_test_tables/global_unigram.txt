@@ -1,0 +1,4 @@
+hello -> world(2), universe(1)
+world -> hello(1), universe(1)
+universe -> hello(1), world(1)
+test -> only(1)

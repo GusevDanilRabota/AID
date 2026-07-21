@@ -1,4 +1,11 @@
+/**
+ * @file md_parser.c
+ * @brief Реализация парсера Markdown с общими n-граммами.
+ */
+
 #include "md_parser.h"
+#include "ngram_model.h"
+#include "utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,44 +14,17 @@
 #include <sys/stat.h>
 
 #ifdef _WIN32
-    #include <direct.h>
     #define strcasecmp _stricmp
 #else
     #include <strings.h>
 #endif
 
+#define MAX_WORD_LEN 256
 #define SMOOTHING_ALPHA 0.01
 
-static void ensure_dir(const char *path) {
-    struct stat st;
-    if (stat(path, &st) == -1) {
-#ifdef _WIN32
-        if (_mkdir(path) == -1) {
-#else
-        if (mkdir(path, 0755) == -1) {
-#endif
-            perror("mkdir"); exit(1);
-        }
-    } else if (!S_ISDIR(st.st_mode)) {
-        fprintf(stderr, "Error: %s exists but is not a directory\n", path);
-        exit(1);
-    }
-}
-
-static char* make_output_path(const char *out_dir, const char *in_filename) {
-    const char *base = strrchr(in_filename, '/');
-    if (!base) base = in_filename; else base++;
-    char *name_copy = strdup(base);
-    if (!name_copy) { perror("strdup"); exit(1); }
-    char *dot = strrchr(name_copy, '.');
-    if (dot) *dot = '\0';
-    size_t out_len = strlen(out_dir) + strlen(name_copy) + 6;
-    char *out_path = malloc(out_len);
-    if (!out_path) { perror("malloc"); exit(1); }
-    snprintf(out_path, out_len, "%s/%s.txt", out_dir, name_copy);
-    free(name_copy);
-    return out_path;
-}
+/* ------------------------------------------------------------
+ * Вспомогательные функции (ensure_dir, make_output_path удалены)
+ * ------------------------------------------------------------ */
 
 static const char* detect_markdown_token(const char *line) {
     while (isspace(*line)) line++;
@@ -60,13 +40,13 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
     if (md_token) {
         int idx = add_word_unigram(uni, md_token);
         if (*prev1 != -1 && *prev2 != -1) {
-            char key[2 * MAX_TOKEN_LEN + 2];
+            char key[2 * MAX_WORD_LEN + 2];
             sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
             int state = add_state_bigram(bi, key);
             add_transition_bigram(bi, state, idx);
         }
         if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-            char key[3 * MAX_TOKEN_LEN + 3];
+            char key[3 * MAX_WORD_LEN + 3];
             sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
             int state = add_state_trigram(tri, key);
             add_transition_trigram(tri, state, idx);
@@ -76,11 +56,11 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
     }
 
     const char *p = line;
-    char token[MAX_TOKEN_LEN];
+    char token[MAX_WORD_LEN];
     int pos = 0, in_word = 0;
     while (*p) {
         if (isalpha(*p) || isdigit(*p)) {
-            if (pos < MAX_TOKEN_LEN - 1) token[pos++] = *p;
+            if (pos < MAX_WORD_LEN - 1) token[pos++] = *p;
             in_word = 1;
         } else {
             if (in_word) {
@@ -88,13 +68,13 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
                 if (*sentence_start) {
                     int bos = add_word_unigram(uni, "<BOS>");
                     if (*prev1 != -1 && *prev2 != -1) {
-                        char key[2 * MAX_TOKEN_LEN + 2];
+                        char key[2 * MAX_WORD_LEN + 2];
                         sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
                         int state = add_state_bigram(bi, key);
                         add_transition_bigram(bi, state, bos);
                     }
                     if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                        char key[3 * MAX_TOKEN_LEN + 3];
+                        char key[3 * MAX_WORD_LEN + 3];
                         sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
                         int state = add_state_trigram(tri, key);
                         add_transition_trigram(tri, state, bos);
@@ -105,13 +85,13 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
                 int idx = add_word_unigram(uni, token);
                 if (*prev1 != -1) add_transition_unigram(uni, *prev1, idx);
                 if (*prev1 != -1 && *prev2 != -1) {
-                    char key[2 * MAX_TOKEN_LEN + 2];
+                    char key[2 * MAX_WORD_LEN + 2];
                     sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
                     int state = add_state_bigram(bi, key);
                     add_transition_bigram(bi, state, idx);
                 }
                 if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                    char key[3 * MAX_TOKEN_LEN + 3];
+                    char key[3 * MAX_WORD_LEN + 3];
                     sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
                     int state = add_state_trigram(tri, key);
                     add_transition_trigram(tri, state, idx);
@@ -125,13 +105,13 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
                 int idx = add_word_unigram(uni, punct);
                 if (*prev1 != -1) add_transition_unigram(uni, *prev1, idx);
                 if (*prev1 != -1 && *prev2 != -1) {
-                    char key[2 * MAX_TOKEN_LEN + 2];
+                    char key[2 * MAX_WORD_LEN + 2];
                     sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
                     int state = add_state_bigram(bi, key);
                     add_transition_bigram(bi, state, idx);
                 }
                 if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                    char key[3 * MAX_TOKEN_LEN + 3];
+                    char key[3 * MAX_WORD_LEN + 3];
                     sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
                     int state = add_state_trigram(tri, key);
                     add_transition_trigram(tri, state, idx);
@@ -141,13 +121,13 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
                     int eos = add_word_unigram(uni, "<EOS>");
                     if (*prev1 != -1) add_transition_unigram(uni, *prev1, eos);
                     if (*prev1 != -1 && *prev2 != -1) {
-                        char key[2 * MAX_TOKEN_LEN + 2];
+                        char key[2 * MAX_WORD_LEN + 2];
                         sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
                         int state = add_state_bigram(bi, key);
                         add_transition_bigram(bi, state, eos);
                     }
                     if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                        char key[3 * MAX_TOKEN_LEN + 3];
+                        char key[3 * MAX_WORD_LEN + 3];
                         sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
                         int state = add_state_trigram(tri, key);
                         add_transition_trigram(tri, state, eos);
@@ -164,13 +144,13 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
         if (*sentence_start) {
             int bos = add_word_unigram(uni, "<BOS>");
             if (*prev1 != -1 && *prev2 != -1) {
-                char key[2 * MAX_TOKEN_LEN + 2];
+                char key[2 * MAX_WORD_LEN + 2];
                 sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
                 int state = add_state_bigram(bi, key);
                 add_transition_bigram(bi, state, bos);
             }
             if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                char key[3 * MAX_TOKEN_LEN + 3];
+                char key[3 * MAX_WORD_LEN + 3];
                 sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
                 int state = add_state_trigram(tri, key);
                 add_transition_trigram(tri, state, bos);
@@ -181,13 +161,13 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
         int idx = add_word_unigram(uni, token);
         if (*prev1 != -1) add_transition_unigram(uni, *prev1, idx);
         if (*prev1 != -1 && *prev2 != -1) {
-            char key[2 * MAX_TOKEN_LEN + 2];
+            char key[2 * MAX_WORD_LEN + 2];
             sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
             int state = add_state_bigram(bi, key);
             add_transition_bigram(bi, state, idx);
         }
         if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-            char key[3 * MAX_TOKEN_LEN + 3];
+            char key[3 * MAX_WORD_LEN + 3];
             sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
             int state = add_state_trigram(tri, key);
             add_transition_trigram(tri, state, idx);
