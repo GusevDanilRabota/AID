@@ -1,9 +1,6 @@
 /**
  * @file md_parser.c
- * @brief Реализация расширенного парсера Markdown с поддержкой биграмм, структуры и сглаживания.
- * 
- * Содержит все функции для извлечения токенов, построения униграммных и биграммных переходов,
- * учёта регистра, пунктуации, маркдаун-разметки, а также записи таблиц частот и вероятностей.
+ * @brief Расширенный парсер Markdown с поддержкой униграмм, биграмм и триграмм.
  */
 
 #include "md_parser.h"
@@ -16,24 +13,25 @@
 #include <sys/stat.h>
 
 #ifdef _WIN32
-    #include <direct.h>          // для _mkdir
+    #include <direct.h>
     #define strcasecmp _stricmp
 #else
-    #include <strings.h>         // для strcasecmp
-    #define _mkdir(dir) mkdir(dir, 0755)   // для единообразия, но не используется
+    #include <strings.h>
 #endif
 
 /* ------------------------------------------------------------------
- * Конфигурационные константы
+ * Конфигурация
  * ------------------------------------------------------------------ */
-#define HASH_SIZE       1024      /**< Размер хеш-таблиц */
-#define MAX_WORD_LEN    256       /**< Максимальная длина токена */
-#define SMOOTHING_ALPHA 0.01f     /**< Коэффициент аддитивного сглаживания */
-#define UNIGRAM_TABLE  "global_unigram.txt"
-#define BIGRAM_TABLE   "global_bigram.txt"
+#define HASH_SIZE       1024
+#define MAX_WORD_LEN    256
+#define SMOOTHING_ALPHA 0.01f
+
+#define UNIGRAM_TABLE "global_unigram.txt"
+#define BIGRAM_TABLE  "global_bigram.txt"
+#define TRIGRAM_TABLE "global_trigram.txt"
 
 /* ------------------------------------------------------------------
- * Структуры для униграмм (первый порядок)
+ * Структуры для униграмм
  * ------------------------------------------------------------------ */
 typedef struct transition {
     int target_index;
@@ -60,7 +58,7 @@ typedef struct {
 } unigram_context;
 
 /* ------------------------------------------------------------------
- * Структуры для биграмм (второй порядок)
+ * Структуры для биграмм
  * ------------------------------------------------------------------ */
 typedef struct bigram_transition {
     int target_index;
@@ -87,7 +85,34 @@ typedef struct {
 } bigram_context;
 
 /* ------------------------------------------------------------------
- * Функции для униграмм
+ * Структуры для триграмм
+ * ------------------------------------------------------------------ */
+typedef struct trigram_transition {
+    int target_index;
+    int count;
+    struct trigram_transition *next;
+} trigram_transition;
+
+typedef struct trigram_state {
+    char *key;                 /* "word1|word2|word3" */
+    trigram_transition *transitions;
+} trigram_state;
+
+typedef struct trigram_node {
+    char *key;
+    int index;
+    struct trigram_node *next;
+} trigram_node;
+
+typedef struct {
+    trigram_state *states;
+    int state_count;
+    int state_capacity;
+    trigram_node **hash_table;
+} trigram_context;
+
+/* ------------------------------------------------------------------
+ * Функции для униграмм (аналогичны предыдущей версии)
  * ------------------------------------------------------------------ */
 static void init_unigram(unigram_context *ctx) {
     ctx->words = NULL;
@@ -269,7 +294,92 @@ static void add_bigram_transition(bigram_context *ctx, int state_idx, int target
 }
 
 /* ------------------------------------------------------------------
- * Формирование ключа для биграммы
+ * Функции для триграмм
+ * ------------------------------------------------------------------ */
+static void init_trigram(trigram_context *ctx) {
+    ctx->states = NULL;
+    ctx->state_count = 0;
+    ctx->state_capacity = 0;
+    ctx->hash_table = calloc(HASH_SIZE, sizeof(trigram_node *));
+    if (!ctx->hash_table) { perror("calloc"); exit(1); }
+}
+
+static void free_trigram(trigram_context *ctx) {
+    for (int i = 0; i < ctx->state_count; i++) {
+        free(ctx->states[i].key);
+        trigram_transition *t = ctx->states[i].transitions;
+        while (t) {
+            trigram_transition *next = t->next;
+            free(t);
+            t = next;
+        }
+    }
+    free(ctx->states);
+    for (int i = 0; i < HASH_SIZE; i++) {
+        trigram_node *n = ctx->hash_table[i];
+        while (n) {
+            trigram_node *next = n->next;
+            free(n);
+            n = next;
+        }
+    }
+    free(ctx->hash_table);
+}
+
+static int find_trigram_state(trigram_context *ctx, const char *key) {
+    unsigned int h = hash_key(key);
+    trigram_node *n = ctx->hash_table[h];
+    while (n) {
+        if (strcmp(n->key, key) == 0) return n->index;
+        n = n->next;
+    }
+    return -1;
+}
+
+static int add_trigram_state(trigram_context *ctx, const char *key) {
+    int idx = find_trigram_state(ctx, key);
+    if (idx != -1) return idx;
+
+    if (ctx->state_count >= ctx->state_capacity) {
+        ctx->state_capacity = ctx->state_capacity ? ctx->state_capacity * 2 : 16;
+        ctx->states = realloc(ctx->states, ctx->state_capacity * sizeof(trigram_state));
+        if (!ctx->states) { perror("realloc"); exit(1); }
+    }
+
+    char *copy = malloc(strlen(key) + 1);
+    if (!copy) { perror("malloc"); exit(1); }
+    strcpy(copy, key);
+
+    ctx->states[ctx->state_count].key = copy;
+    ctx->states[ctx->state_count].transitions = NULL;
+
+    unsigned int h = hash_key(key);
+    trigram_node *node = malloc(sizeof(trigram_node));
+    if (!node) { perror("malloc"); exit(1); }
+    node->key = copy;
+    node->index = ctx->state_count;
+    node->next = ctx->hash_table[h];
+    ctx->hash_table[h] = node;
+
+    return ctx->state_count++;
+}
+
+static void add_trigram_transition(trigram_context *ctx, int state_idx, int target_word_idx) {
+    trigram_transition *t = ctx->states[state_idx].transitions;
+    while (t) {
+        if (t->target_index == target_word_idx) { t->count++; return; }
+        t = t->next;
+    }
+    trigram_transition *new_t = malloc(sizeof(trigram_transition));
+    if (!new_t) { perror("malloc"); exit(1); }
+    new_t->target_index = target_word_idx;
+    new_t->count = 1;
+    new_t->next = ctx->states[state_idx].transitions;
+    ctx->states[state_idx].transitions = new_t;
+}
+
+/* ------------------------------------------------------------------
+ * Вспомогательная: формирование ключей
  * ------------------------------------------------------------------ */
 static char* make_bigram_key(const unigram_context *uni, int idx1, int idx2) {
     char *key = malloc(2 * MAX_WORD_LEN + 2);
@@ -278,8 +388,15 @@ static char* make_bigram_key(const unigram_context *uni, int idx1, int idx2) {
     return key;
 }
 
+static char* make_trigram_key(const unigram_context *uni, int idx1, int idx2, int idx3) {
+    char *key = malloc(3 * MAX_WORD_LEN + 3);
+    if (!key) { perror("malloc"); exit(1); }
+    sprintf(key, "%s|%s|%s", uni->words[idx1].word, uni->words[idx2].word, uni->words[idx3].word);
+    return key;
+}
+
 /* ------------------------------------------------------------------
- * Обнаружение маркдаун-структуры
+ * Распознавание структуры Markdown
  * ------------------------------------------------------------------ */
 static const char* detect_markdown_token(const char *line) {
     while (isspace(*line)) line++;
@@ -290,19 +407,28 @@ static const char* detect_markdown_token(const char *line) {
 }
 
 /* ------------------------------------------------------------------
- * Обработка одной строки: извлечение токенов и обновление контекстов
+ * Обработка одной строки с обновлением уни-, би- и триграмм
  * ------------------------------------------------------------------ */
-static void process_line(const char *line, unigram_context *uni, bigram_context *bi,
-                         int *prev1, int *prev2, int *sentence_start) {
+static void process_line(const char *line, unigram_context *uni, bigram_context *bi, trigram_context *tri,
+                         int *prev1, int *prev2, int *prev3, int *sentence_start) {
     const char *md_token = detect_markdown_token(line);
     if (md_token) {
         int token_idx = add_unigram(uni, md_token);
+        // Добавляем переходы для биграмм и триграмм (если есть контекст)
         if (*prev1 != -1 && *prev2 != -1) {
             char *key = make_bigram_key(uni, *prev2, *prev1);
             int state_idx = add_bigram_state(bi, key);
             add_bigram_transition(bi, state_idx, token_idx);
             free(key);
         }
+        if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
+            char *key = make_trigram_key(uni, *prev3, *prev2, *prev1);
+            int state_idx = add_trigram_state(tri, key);
+            add_trigram_transition(tri, state_idx, token_idx);
+            free(key);
+        }
+        // Сдвиг окна
+        *prev3 = *prev2;
         *prev2 = *prev1;
         *prev1 = token_idx;
         *sentence_start = 0;
@@ -310,8 +436,7 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
 
     const char *p = line;
     char token[MAX_WORD_LEN];
-    int pos = 0;
-    int in_word = 0;
+    int pos = 0, in_word = 0;
 
     while (*p) {
         if (isalpha(*p) || isdigit(*p)) {
@@ -324,26 +449,42 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
                 token[pos] = '\0';
                 if (*sentence_start) {
                     int bos_idx = add_unigram(uni, "<BOS>");
+                    // Добавляем переходы с BOS
                     if (*prev1 != -1 && *prev2 != -1) {
                         char *key = make_bigram_key(uni, *prev2, *prev1);
                         int state_idx = add_bigram_state(bi, key);
                         add_bigram_transition(bi, state_idx, bos_idx);
                         free(key);
                     }
+                    if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
+                        char *key = make_trigram_key(uni, *prev3, *prev2, *prev1);
+                        int state_idx = add_trigram_state(tri, key);
+                        add_trigram_transition(tri, state_idx, bos_idx);
+                        free(key);
+                    }
+                    *prev3 = *prev2;
                     *prev2 = *prev1;
                     *prev1 = bos_idx;
                     *sentence_start = 0;
                 }
                 int word_idx = add_unigram(uni, token);
-                if (*prev1 != -1) {
-                    add_unigram_transition(uni, *prev1, word_idx);
-                }
+                // Униграмма
+                if (*prev1 != -1) add_unigram_transition(uni, *prev1, word_idx);
+                // Биграмма
                 if (*prev1 != -1 && *prev2 != -1) {
                     char *key = make_bigram_key(uni, *prev2, *prev1);
                     int state_idx = add_bigram_state(bi, key);
                     add_bigram_transition(bi, state_idx, word_idx);
                     free(key);
                 }
+                // Триграмма
+                if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
+                    char *key = make_trigram_key(uni, *prev3, *prev2, *prev1);
+                    int state_idx = add_trigram_state(tri, key);
+                    add_trigram_transition(tri, state_idx, word_idx);
+                    free(key);
+                }
+                *prev3 = *prev2;
                 *prev2 = *prev1;
                 *prev1 = word_idx;
                 pos = 0;
@@ -353,29 +494,40 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
             if (strchr(".,!?;:-", *p)) {
                 char punct[2] = {*p, '\0'};
                 int punct_idx = add_unigram(uni, punct);
-                if (*prev1 != -1) {
-                    add_unigram_transition(uni, *prev1, punct_idx);
-                }
+                // Добавляем переходы с пунктуацией
+                if (*prev1 != -1) add_unigram_transition(uni, *prev1, punct_idx);
                 if (*prev1 != -1 && *prev2 != -1) {
                     char *key = make_bigram_key(uni, *prev2, *prev1);
                     int state_idx = add_bigram_state(bi, key);
                     add_bigram_transition(bi, state_idx, punct_idx);
                     free(key);
                 }
+                if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
+                    char *key = make_trigram_key(uni, *prev3, *prev2, *prev1);
+                    int state_idx = add_trigram_state(tri, key);
+                    add_trigram_transition(tri, state_idx, punct_idx);
+                    free(key);
+                }
+                *prev3 = *prev2;
                 *prev2 = *prev1;
                 *prev1 = punct_idx;
 
                 if (*p == '.' || *p == '!' || *p == '?') {
                     int eos_idx = add_unigram(uni, "<EOS>");
-                    if (*prev1 != -1) {
-                        add_unigram_transition(uni, *prev1, eos_idx);
-                    }
+                    if (*prev1 != -1) add_unigram_transition(uni, *prev1, eos_idx);
                     if (*prev1 != -1 && *prev2 != -1) {
                         char *key = make_bigram_key(uni, *prev2, *prev1);
                         int state_idx = add_bigram_state(bi, key);
                         add_bigram_transition(bi, state_idx, eos_idx);
                         free(key);
                     }
+                    if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
+                        char *key = make_trigram_key(uni, *prev3, *prev2, *prev1);
+                        int state_idx = add_trigram_state(tri, key);
+                        add_trigram_transition(tri, state_idx, eos_idx);
+                        free(key);
+                    }
+                    *prev3 = *prev2;
                     *prev2 = *prev1;
                     *prev1 = eos_idx;
                     *sentence_start = 1;
@@ -395,47 +547,57 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
                 add_bigram_transition(bi, state_idx, bos_idx);
                 free(key);
             }
+            if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
+                char *key = make_trigram_key(uni, *prev3, *prev2, *prev1);
+                int state_idx = add_trigram_state(tri, key);
+                add_trigram_transition(tri, state_idx, bos_idx);
+                free(key);
+            }
+            *prev3 = *prev2;
             *prev2 = *prev1;
             *prev1 = bos_idx;
             *sentence_start = 0;
         }
         int word_idx = add_unigram(uni, token);
-        if (*prev1 != -1) {
-            add_unigram_transition(uni, *prev1, word_idx);
-        }
+        if (*prev1 != -1) add_unigram_transition(uni, *prev1, word_idx);
         if (*prev1 != -1 && *prev2 != -1) {
             char *key = make_bigram_key(uni, *prev2, *prev1);
             int state_idx = add_bigram_state(bi, key);
             add_bigram_transition(bi, state_idx, word_idx);
             free(key);
         }
+        if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
+            char *key = make_trigram_key(uni, *prev3, *prev2, *prev1);
+            int state_idx = add_trigram_state(tri, key);
+            add_trigram_transition(tri, state_idx, word_idx);
+            free(key);
+        }
+        *prev3 = *prev2;
         *prev2 = *prev1;
         *prev1 = word_idx;
     }
 }
 
 /* ------------------------------------------------------------------
- * Парсинг одного файла
+ * Парсинг одного файла и запись локальной таблицы
  * ------------------------------------------------------------------ */
-static void parse_file(FILE *input, FILE *output, unigram_context *uni, bigram_context *bi) {
+static void parse_file(FILE *input, FILE *output, unigram_context *uni, bigram_context *bi, trigram_context *tri) {
     char line[4096];
-    int prev1 = -1, prev2 = -1;
+    int prev1 = -1, prev2 = -1, prev3 = -1;
     int sentence_start = 1;
 
     while (fgets(line, sizeof(line), input)) {
         size_t len = strlen(line);
         if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
-        process_line(line, uni, bi, &prev1, &prev2, &sentence_start);
+        process_line(line, uni, bi, tri, &prev1, &prev2, &prev3, &sentence_start);
     }
 
-    // Запись локальной таблицы (униграммы) в output
     if (output) {
         for (int i = 0; i < uni->word_count; i++) {
             fprintf(output, "%s -> ", uni->words[i].word);
             transition *t = uni->words[i].transitions;
-            if (!t) {
-                fprintf(output, "(no transitions)\n");
-            } else {
+            if (!t) fprintf(output, "(no transitions)\n");
+            else {
                 while (t) {
                     fprintf(output, "%s(%d)", uni->words[t->target_index].word, t->count);
                     t = t->next;
@@ -450,72 +612,74 @@ static void parse_file(FILE *input, FILE *output, unigram_context *uni, bigram_c
 /* ------------------------------------------------------------------
  * Запись глобальных таблиц с вероятностями (сглаженными)
  * ------------------------------------------------------------------ */
-static void write_unigram_table(const unigram_context *uni, const char *output_dir) {
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/%s", output_dir, UNIGRAM_TABLE);
-    FILE *out = fopen(path, "w");
-    if (!out) { perror("fopen unigram output"); return; }
-
-    int total_words = uni->word_count;
+static void write_prob_table_unigram(const unigram_context *uni, const char *path) {
+    FILE *f = fopen(path, "w");
+    if (!f) { perror("fopen unigram"); return; }
+    int total = uni->word_count;
     for (int i = 0; i < uni->word_count; i++) {
         const word_entry *we = &uni->words[i];
-        fprintf(out, "%s -> ", we->word);
-
-        if (!we->transitions) {
-            fprintf(out, "(no transitions)\n");
-            continue;
-        }
-
-        int sum = 0;
-        transition *t = we->transitions;
+        fprintf(f, "%s -> ", we->word);
+        if (!we->transitions) { fprintf(f, "(no transitions)\n"); continue; }
+        int sum = 0; transition *t = we->transitions;
         while (t) { sum += t->count; t = t->next; }
-
         t = we->transitions;
         while (t) {
-            double prob = (double)(t->count + SMOOTHING_ALPHA) / (sum + SMOOTHING_ALPHA * total_words);
-            fprintf(out, "%s(%.4f)", uni->words[t->target_index].word, prob);
+            double prob = (double)(t->count + SMOOTHING_ALPHA) / (sum + SMOOTHING_ALPHA * total);
+            fprintf(f, "%s(%.4f)", uni->words[t->target_index].word, prob);
             t = t->next;
-            if (t) fprintf(out, ", ");
+            if (t) fprintf(f, ", ");
         }
-        fprintf(out, "\n");
+        fprintf(f, "\n");
     }
-    fclose(out);
+    fclose(f);
 }
 
-static void write_bigram_table(const bigram_context *bi, const unigram_context *uni, const char *output_dir) {
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/%s", output_dir, BIGRAM_TABLE);
-    FILE *out = fopen(path, "w");
-    if (!out) { perror("fopen bigram output"); return; }
-
-    int total_words = uni->word_count;
+static void write_prob_table_bigram(const bigram_context *bi, const unigram_context *uni, const char *path) {
+    FILE *f = fopen(path, "w");
+    if (!f) { perror("fopen bigram"); return; }
+    int total = uni->word_count;
     for (int i = 0; i < bi->state_count; i++) {
         const bigram_state *st = &bi->states[i];
-        fprintf(out, "%s -> ", st->key);
-
-        if (!st->transitions) {
-            fprintf(out, "(no transitions)\n");
-            continue;
-        }
-
-        int sum = 0;
-        bigram_transition *t = st->transitions;
+        fprintf(f, "%s -> ", st->key);
+        if (!st->transitions) { fprintf(f, "(no transitions)\n"); continue; }
+        int sum = 0; bigram_transition *t = st->transitions;
         while (t) { sum += t->count; t = t->next; }
-
         t = st->transitions;
         while (t) {
-            double prob = (double)(t->count + SMOOTHING_ALPHA) / (sum + SMOOTHING_ALPHA * total_words);
-            fprintf(out, "%s(%.4f)", uni->words[t->target_index].word, prob);
+            double prob = (double)(t->count + SMOOTHING_ALPHA) / (sum + SMOOTHING_ALPHA * total);
+            fprintf(f, "%s(%.4f)", uni->words[t->target_index].word, prob);
             t = t->next;
-            if (t) fprintf(out, ", ");
+            if (t) fprintf(f, ", ");
         }
-        fprintf(out, "\n");
+        fprintf(f, "\n");
     }
-    fclose(out);
+    fclose(f);
+}
+
+static void write_prob_table_trigram(const trigram_context *tri, const unigram_context *uni, const char *path) {
+    FILE *f = fopen(path, "w");
+    if (!f) { perror("fopen trigram"); return; }
+    int total = uni->word_count;
+    for (int i = 0; i < tri->state_count; i++) {
+        const trigram_state *st = &tri->states[i];
+        fprintf(f, "%s -> ", st->key);
+        if (!st->transitions) { fprintf(f, "(no transitions)\n"); continue; }
+        int sum = 0; trigram_transition *t = st->transitions;
+        while (t) { sum += t->count; t = t->next; }
+        t = st->transitions;
+        while (t) {
+            double prob = (double)(t->count + SMOOTHING_ALPHA) / (sum + SMOOTHING_ALPHA * total);
+            fprintf(f, "%s(%.4f)", uni->words[t->target_index].word, prob);
+            t = t->next;
+            if (t) fprintf(f, ", ");
+        }
+        fprintf(f, "\n");
+    }
+    fclose(f);
 }
 
 /* ------------------------------------------------------------------
- * Вспомогательные функции для работы с директориями
+ * Вспомогательные файловые функции
  * ------------------------------------------------------------------ */
 static void ensure_dir(const char *path) {
     struct stat st;
@@ -529,7 +693,7 @@ static void ensure_dir(const char *path) {
             exit(1);
         }
     } else if (!S_ISDIR(st.st_mode)) {
-        fprintf(stderr, "Ошибка: %s существует, но не является директорией\n", path);
+        fprintf(stderr, "Error: %s exists but is not a directory\n", path);
         exit(1);
     }
 }
@@ -538,12 +702,10 @@ static char* make_output_path(const char *out_dir, const char *in_filename) {
     const char *base = strrchr(in_filename, '/');
     if (!base) base = in_filename;
     else base++;
-
     char *name_copy = strdup(base);
     if (!name_copy) { perror("strdup"); exit(1); }
     char *dot = strrchr(name_copy, '.');
     if (dot) *dot = '\0';
-
     size_t out_len = strlen(out_dir) + strlen(name_copy) + 6;
     char *out_path = malloc(out_len);
     if (!out_path) { perror("malloc"); exit(1); }
@@ -560,14 +722,17 @@ void process_markdown_files(const char *input_dir, const char *output_dir) {
 
     unigram_context uni;
     bigram_context bi;
+    trigram_context tri;
     init_unigram(&uni);
     init_bigram(&bi);
+    init_trigram(&tri);
 
     DIR *dir = opendir(input_dir);
     if (!dir) {
         perror("opendir");
         free_unigram(&uni);
         free_bigram(&bi);
+        free_trigram(&tri);
         return;
     }
 
@@ -588,7 +753,7 @@ void process_markdown_files(const char *input_dir, const char *output_dir) {
         if (!in_file) { perror("fopen input"); continue; }
 
         char *out_path = make_output_path(output_dir, name);
-        printf("Обработан: %s -> %s\n", name, out_path);
+        printf("Processed: %s -> %s\n", name, out_path);
 
         FILE *out_file = fopen(out_path, "w");
         free(out_path);
@@ -598,18 +763,20 @@ void process_markdown_files(const char *input_dir, const char *output_dir) {
             continue;
         }
 
-        parse_file(in_file, out_file, &uni, &bi);
-
+        parse_file(in_file, out_file, &uni, &bi, &tri);
         fclose(in_file);
         fclose(out_file);
     }
 
     closedir(dir);
 
-    write_unigram_table(&uni, output_dir);
-    write_bigram_table(&bi, &uni, output_dir);
-    printf("Глобальные таблицы сохранены в %s/\n", output_dir);
+    // Сохраняем глобальные таблицы
+    write_prob_table_unigram(&uni, "output/global_unigram.txt");
+    write_prob_table_bigram(&bi, &uni, "output/global_bigram.txt");
+    write_prob_table_trigram(&tri, &uni, "output/global_trigram.txt");
+    printf("Global tables saved in %s/\n", output_dir);
 
     free_unigram(&uni);
     free_bigram(&bi);
+    free_trigram(&tri);
 }
