@@ -1,1 +1,1 @@
-<BOS>  python def greet : print Hello
+<BOS>  AI - . <EOS> . <EOS> . <EOS> . <EOS> . <EOS> . <EOS> . <EOS> . <EOS> . <EOS> . <EOS> . <EOS> . <EOS> . <EOS> . <EOS>

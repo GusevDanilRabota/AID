@@ -1,2 +1,0 @@
-hello|world|universe -> hello(1), world(1)
-world|universe|hello -> world(1)
