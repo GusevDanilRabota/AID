@@ -1,9 +1,9 @@
 /**
  * @file md_parser.c
- * @brief Реализация парсера Markdown-файлов для цепей Маркова.
+ * @brief Реализация парсера Markdown-файлов для цепей Маркова с поддержкой глобальной таблицы вероятностей.
  * 
  * Содержит все структуры и функции для извлечения слов, подсчёта переходов,
- * работы с файловой системой и вывода результатов.
+ * работы с файловой системой и вывода результатов как по отдельным файлам, так и в обобщённом виде.
  */
 
 #include "md_parser.h"
@@ -25,6 +25,7 @@
 /* Константы настройки парсера */
 #define HASH_SIZE   1024     /**< Размер хеш-таблицы для слов */
 #define MAX_WORD_LEN 256     /**< Максимальная длина слова */
+#define GLOBAL_TABLE_NAME "global_table.txt" /**< Имя файла для глобальной таблицы вероятностей */
 
 /**
  * @struct transition
@@ -57,7 +58,7 @@ typedef struct word_node {
 
 /**
  * @struct parse_context
- * @brief Контекст парсинга одного файла (содержит все динамические структуры).
+ * @brief Контекст парсинга (содержит все динамические структуры для одного или глобального набора данных).
  */
 typedef struct {
     word_entry *words;       /**< Массив всех уникальных слов */
@@ -167,7 +168,7 @@ static int add_word(parse_context *ctx, const char *s) {
         perror("malloc");
         exit(1);
     }
-    strcpy(copy, s);   // безопасно, т.к. длина контролируется вызывающей стороной
+    strcpy(copy, s);
 
     ctx->words[ctx->word_count].word = copy;
     ctx->words[ctx->word_count].transitions = NULL;
@@ -213,22 +214,26 @@ static void add_transition(parse_context *ctx, int from, int to) {
 }
 
 /* ------------------------------------------------------------
- * Парсинг одного файла и запись таблицы
+ * Парсинг одного файла с возможностью одновременного заполнения глобального контекста
  * ------------------------------------------------------------ */
 
 /**
  * @brief Парсит входной поток и записывает таблицу частот в выходной поток.
- * @param input  открытый FILE* для чтения (MD-файл)
- * @param output открытый FILE* для записи (текстовый файл)
+ * Одновременно, если передан глобальный контекст, накапливает переходы в нём.
+ * 
+ * @param input     открытый FILE* для чтения (MD-файл)
+ * @param output    открытый FILE* для записи локальной таблицы частот (может быть NULL, тогда только глобальное накопление)
+ * @param global_ctx указатель на глобальный контекст (может быть NULL, тогда только локальная обработка)
  */
-static void parse_file(FILE *input, FILE *output) {
-    parse_context ctx;
-    init_context(&ctx);
+static void parse_file(FILE *input, FILE *output, parse_context *global_ctx) {
+    parse_context local_ctx;
+    init_context(&local_ctx);
 
     char word_buf[MAX_WORD_LEN];
     int pos = 0;
     int c;
-    int prev_index = -1;   // индекс предыдущего слова, -1 означает "нет"
+    int prev_local = -1;
+    int prev_global = -1;
 
     while ((c = fgetc(input)) != EOF) {
         if (isalpha(c)) {
@@ -238,40 +243,60 @@ static void parse_file(FILE *input, FILE *output) {
         } else {
             if (pos > 0) {
                 word_buf[pos] = '\0';
-                int cur_index = add_word(&ctx, word_buf);
-                if (prev_index != -1) {
-                    add_transition(&ctx, prev_index, cur_index);
+                int cur_local = add_word(&local_ctx, word_buf);
+                int cur_global = -1;
+                if (global_ctx) {
+                    cur_global = add_word(global_ctx, word_buf);
                 }
-                prev_index = cur_index;
+
+                if (prev_local != -1) {
+                    add_transition(&local_ctx, prev_local, cur_local);
+                    if (global_ctx && prev_global != -1) {
+                        add_transition(global_ctx, prev_global, cur_global);
+                    }
+                }
+
+                prev_local = cur_local;
+                prev_global = cur_global;
                 pos = 0;
             }
         }
     }
     if (pos > 0) {
         word_buf[pos] = '\0';
-        int cur_index = add_word(&ctx, word_buf);
-        if (prev_index != -1) {
-            add_transition(&ctx, prev_index, cur_index);
+        int cur_local = add_word(&local_ctx, word_buf);
+        int cur_global = -1;
+        if (global_ctx) {
+            cur_global = add_word(global_ctx, word_buf);
         }
-    }
-
-    /* Вывод таблицы в выходной поток */
-    for (int i = 0; i < ctx.word_count; i++) {
-        fprintf(output, "%s -> ", ctx.words[i].word);
-        transition *t = ctx.words[i].transitions;
-        if (!t) {
-            fprintf(output, "(no transitions)\n");
-        } else {
-            while (t) {
-                fprintf(output, "%s(%d)", ctx.words[t->target_index].word, t->count);
-                t = t->next;
-                if (t) fprintf(output, ", ");
+        if (prev_local != -1) {
+            add_transition(&local_ctx, prev_local, cur_local);
+            if (global_ctx && prev_global != -1) {
+                add_transition(global_ctx, prev_global, cur_global);
             }
-            fprintf(output, "\n");
+        }
+        /* последнее слово не обновляем, т.к. после него нет перехода */
+    }
+
+    /* Если задан выходной поток, записываем локальную таблицу частот */
+    if (output) {
+        for (int i = 0; i < local_ctx.word_count; i++) {
+            fprintf(output, "%s -> ", local_ctx.words[i].word);
+            transition *t = local_ctx.words[i].transitions;
+            if (!t) {
+                fprintf(output, "(no transitions)\n");
+            } else {
+                while (t) {
+                    fprintf(output, "%s(%d)", local_ctx.words[t->target_index].word, t->count);
+                    t = t->next;
+                    if (t) fprintf(output, ", ");
+                }
+                fprintf(output, "\n");
+            }
         }
     }
 
-    free_context(&ctx);
+    free_context(&local_ctx);
 }
 
 /* ------------------------------------------------------------
@@ -307,22 +332,19 @@ static void ensure_dir(const char *path) {
  * @return указатель на динамически выделенную строку с путём (надо освободить free())
  */
 static char *make_output_path(const char *out_dir, const char *in_filename) {
-    /* Отделяем базовое имя файла (без пути) */
     const char *base = strrchr(in_filename, '/');
     if (!base) base = in_filename;
-    else base++;   // пропускаем '/'
+    else base++;
 
-    /* Копируем имя и отрезаем расширение */
     char *name_copy = strdup(base);
     if (!name_copy) {
         perror("strdup");
         exit(1);
     }
     char *dot = strrchr(name_copy, '.');
-    if (dot) *dot = '\0';   // обрезаем расширение
+    if (dot) *dot = '\0';
 
-    /* Собираем выходной путь: output_dir/имя.txt */
-    size_t out_len = strlen(out_dir) + strlen(name_copy) + 5;  // +1 для '/', +4 для ".txt"
+    size_t out_len = strlen(out_dir) + strlen(name_copy) + 5;
     char *out_path = malloc(out_len);
     if (!out_path) {
         perror("malloc");
@@ -334,20 +356,81 @@ static char *make_output_path(const char *out_dir, const char *in_filename) {
 }
 
 /* ------------------------------------------------------------
+ * Запись глобальной таблицы с вероятностями
+ * ------------------------------------------------------------ */
+
+/**
+ * @brief Записывает глобальную таблицу вероятностей переходов в файл.
+ * @param global_ctx глобальный контекст с накопленными переходами
+ * @param output_dir выходная директория
+ * @param filename   имя файла для записи (обычно GLOBAL_TABLE_NAME)
+ */
+static void write_global_table(const parse_context *global_ctx, const char *output_dir, const char *filename) {
+    char *path = malloc(strlen(output_dir) + strlen(filename) + 2);
+    if (!path) {
+        perror("malloc");
+        exit(1);
+    }
+    sprintf(path, "%s/%s", output_dir, filename);
+
+    FILE *out = fopen(path, "w");
+    if (!out) {
+        perror("fopen global output");
+        free(path);
+        return;
+    }
+
+    for (int i = 0; i < global_ctx->word_count; i++) {
+        const word_entry *we = &global_ctx->words[i];
+        fprintf(out, "%s -> ", we->word);
+
+        if (!we->transitions) {
+            fprintf(out, "(no transitions)\n");
+            continue;
+        }
+
+        /* Подсчёт общей суммы переходов из данного слова */
+        int total = 0;
+        transition *t = we->transitions;
+        while (t) {
+            total += t->count;
+            t = t->next;
+        }
+
+        /* Вывод каждого перехода с вероятностью */
+        t = we->transitions;
+        while (t) {
+            double prob = (double)t->count / total;
+            fprintf(out, "%s(%.4f)", global_ctx->words[t->target_index].word, prob);
+            t = t->next;
+            if (t) fprintf(out, ", ");
+        }
+        fprintf(out, "\n");
+    }
+
+    fclose(out);
+    free(path);
+}
+
+/* ------------------------------------------------------------
  * Экспортируемая функция
  * ------------------------------------------------------------ */
 
 /**
  * @brief Основная функция: обрабатывает все .md файлы из input_dir и пишет в output_dir.
- * @param input_dir  путь к папке с исходными .md файлами
- * @param output_dir путь к папке для результатов
+ * Дополнительно создаёт глобальную таблицу вероятностей.
  */
 void process_markdown_files(const char *input_dir, const char *output_dir) {
     ensure_dir(output_dir);
 
+    /* Инициализация глобального контекста */
+    parse_context global_ctx;
+    init_context(&global_ctx);
+
     DIR *dir = opendir(input_dir);
     if (!dir) {
         perror("opendir");
+        free_context(&global_ctx);
         return;
     }
 
@@ -374,24 +457,30 @@ void process_markdown_files(const char *input_dir, const char *output_dir) {
             continue;
         }
 
-        /* Путь к выходному файлу */
+        /* Путь к выходному файлу для локальной таблицы */
         char *out_path = make_output_path(output_dir, name);
-        /* Выводим сообщение до открытия/записи, чтобы использовать out_path до free */
         printf("Обработан: %s -> %s\n", name, out_path);
 
         FILE *out_file = fopen(out_path, "w");
-        free(out_path);   // освобождаем после использования
+        free(out_path);
         if (!out_file) {
             perror("fopen output");
             fclose(in_file);
             continue;
         }
 
-        parse_file(in_file, out_file);
+        /* Парсим файл, записываем локальную таблицу и накапливаем глобальную */
+        parse_file(in_file, out_file, &global_ctx);
 
         fclose(in_file);
         fclose(out_file);
     }
 
     closedir(dir);
+
+    /* После обработки всех файлов записываем глобальную таблицу вероятностей */
+    write_global_table(&global_ctx, output_dir, GLOBAL_TABLE_NAME);
+    printf("Глобальная таблица сохранена в %s/%s\n", output_dir, GLOBAL_TABLE_NAME);
+
+    free_context(&global_ctx);
 }
