@@ -1,0 +1,12 @@
+=== Test Results for md_parser ===
+Generated: Jul 21 2026 13:15:38
+------------------------------------
+
+[PASS] local_tables_created
+[PASS] global_tables_created
+[PASS] unigram_content
+[PASS] bigram_content
+[PASS] write_count_tables
+
+------------------------------------
+TOTAL: 5 passed, 0 failed

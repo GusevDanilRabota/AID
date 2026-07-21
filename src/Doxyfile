@@ -1,0 +1,10 @@
+PROJECT_NAME           = "Markov Text/Code Generator"
+PROJECT_BRIEF          = "Генератор на основе цепей Маркова"
+OUTPUT_DIRECTORY       = docs/
+INPUT                  = src/
+FILE_PATTERNS          = *.c *.h
+RECURSIVE              = YES
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+SOURCE_BROWSER         = YES
+HTML_OUTPUT            = html

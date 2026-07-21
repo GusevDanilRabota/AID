@@ -1,0 +1,14 @@
+=== Test Results for markov ===
+Generated: Jul 21 2026 13:22:00
+----------------------------------
+
+[PASS] load_tables
+[PASS] generate_unigram
+[PASS] generate_bigram
+[PASS] generate_trigram
+[PASS] stopwords_filter
+[PASS] old_api
+[PASS] free_memory
+
+----------------------------------
+TOTAL: 7 passed, 0 failed
