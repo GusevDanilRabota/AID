@@ -1,6 +1,6 @@
 /**
  * @file md_parser.c
- * @brief Реализация парсера Markdown с общими n-граммами.
+ * @brief Расширенный парсер Markdown с учётом структуры блоков.
  */
 
 #include "md_parser.h"
@@ -22,42 +22,102 @@
 #define MAX_WORD_LEN 256
 #define SMOOTHING_ALPHA 0.01
 
-/* ------------------------------------------------------------
- * Вспомогательные функции (ensure_dir, make_output_path удалены)
- * ------------------------------------------------------------ */
+/* Типы блоков */
+typedef enum {
+    BLOCK_NONE,
+    BLOCK_PARAGRAPH,
+    BLOCK_HEADING,
+    BLOCK_LIST,
+    BLOCK_QUOTE,
+    BLOCK_CODE
+} BlockType;
 
-static const char* detect_markdown_token(const char *line) {
+/* ------------------------------------------------------------------
+ * Определение типа блока по строке
+ * ------------------------------------------------------------------ */
+static BlockType detect_block_type(const char *line) {
     while (isspace(*line)) line++;
-    if (*line == '#') return "<H>";
-    if (*line == '-' || *line == '*' || *line == '+') return "<LI>";
-    if (*line == '>') return "<BLOCKQUOTE>";
-    return NULL;
+
+    if (*line == '#') {
+        int level = 0;
+        while (line[level] == '#') level++;
+        if (isspace(line[level])) return BLOCK_HEADING;
+        return BLOCK_PARAGRAPH;
+    }
+    if (*line == '-' || *line == '*' || *line == '+') {
+        const char *p = line + 1;
+        while (isspace(*p)) p++;
+        if (*p == '\0' || isspace(*p) || isalnum(*p))
+            return BLOCK_LIST;
+        return BLOCK_PARAGRAPH;
+    }
+    if (*line == '>') return BLOCK_QUOTE;
+    if (strlen(line) == 0 || strspn(line, " \t") == strlen(line))
+        return BLOCK_NONE;
+    return BLOCK_PARAGRAPH;
 }
 
+/* ------------------------------------------------------------------
+ * Вспомогательная функция добавления токена с переходами
+ * ------------------------------------------------------------------ */
+static void add_token_with_transitions(unigram_context *uni, bigram_context *bi, trigram_context *tri,
+                                       const char *token, int *prev1, int *prev2, int *prev3) {
+    int idx = add_word_unigram(uni, token);
+    if (*prev1 != -1) add_transition_unigram(uni, *prev1, idx);
+    if (*prev1 != -1 && *prev2 != -1) {
+        char key[2 * MAX_WORD_LEN + 2];
+        sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
+        int state = add_state_bigram(bi, key);
+        add_transition_bigram(bi, state, idx);
+    }
+    if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
+        char key[3 * MAX_WORD_LEN + 3];
+        sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
+        int state = add_state_trigram(tri, key);
+        add_transition_trigram(tri, state, idx);
+    }
+    *prev3 = *prev2;
+    *prev2 = *prev1;
+    *prev1 = idx;
+}
+
+/* ------------------------------------------------------------------
+ * Основная функция обработки строки с учётом блоков
+ * ------------------------------------------------------------------ */
 static void process_line(const char *line, unigram_context *uni, bigram_context *bi, trigram_context *tri,
-                         int *prev1, int *prev2, int *prev3, int *sentence_start) {
-    const char *md_token = detect_markdown_token(line);
-    if (md_token) {
-        int idx = add_word_unigram(uni, md_token);
-        if (*prev1 != -1 && *prev2 != -1) {
-            char key[2 * MAX_WORD_LEN + 2];
-            sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
-            int state = add_state_bigram(bi, key);
-            add_transition_bigram(bi, state, idx);
+                         BlockType *current_block, int *prev1, int *prev2, int *prev3,
+                         int *sentence_start) {
+    BlockType new_block = detect_block_type(line);
+
+    // Смена блока
+    if (new_block != *current_block) {
+        // Завершаем старый блок
+        if (*current_block != BLOCK_NONE) {
+            add_token_with_transitions(uni, bi, tri, "<BLOCK_END>", prev1, prev2, prev3);
         }
-        if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-            char key[3 * MAX_WORD_LEN + 3];
-            sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
-            int state = add_state_trigram(tri, key);
-            add_transition_trigram(tri, state, idx);
+        // Начинаем новый блок
+        if (new_block != BLOCK_NONE) {
+            char start_token[32];
+            switch (new_block) {
+                case BLOCK_HEADING: strcpy(start_token, "<BLOCK_START H>"); break;
+                case BLOCK_LIST:    strcpy(start_token, "<BLOCK_START L>"); break;
+                case BLOCK_QUOTE:   strcpy(start_token, "<BLOCK_START Q>"); break;
+                case BLOCK_CODE:    strcpy(start_token, "<BLOCK_START C>"); break;
+                default:            strcpy(start_token, "<BLOCK_START P>"); break;
+            }
+            add_token_with_transitions(uni, bi, tri, start_token, prev1, prev2, prev3);
         }
-        *prev3 = *prev2; *prev2 = *prev1; *prev1 = idx;
-        *sentence_start = 0;
+        *current_block = new_block;
+        *sentence_start = 1;
     }
 
+    if (new_block == BLOCK_NONE) return;
+
+    // Токенизация содержимого строки
     const char *p = line;
     char token[MAX_WORD_LEN];
     int pos = 0, in_word = 0;
+
     while (*p) {
         if (isalpha(*p) || isdigit(*p)) {
             if (pos < MAX_WORD_LEN - 1) token[pos++] = *p;
@@ -66,125 +126,56 @@ static void process_line(const char *line, unigram_context *uni, bigram_context 
             if (in_word) {
                 token[pos] = '\0';
                 if (*sentence_start) {
-                    int bos = add_word_unigram(uni, "<BOS>");
-                    if (*prev1 != -1 && *prev2 != -1) {
-                        char key[2 * MAX_WORD_LEN + 2];
-                        sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
-                        int state = add_state_bigram(bi, key);
-                        add_transition_bigram(bi, state, bos);
-                    }
-                    if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                        char key[3 * MAX_WORD_LEN + 3];
-                        sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
-                        int state = add_state_trigram(tri, key);
-                        add_transition_trigram(tri, state, bos);
-                    }
-                    *prev3 = *prev2; *prev2 = *prev1; *prev1 = bos;
+                    add_token_with_transitions(uni, bi, tri, "<BOS>", prev1, prev2, prev3);
                     *sentence_start = 0;
                 }
-                int idx = add_word_unigram(uni, token);
-                if (*prev1 != -1) add_transition_unigram(uni, *prev1, idx);
-                if (*prev1 != -1 && *prev2 != -1) {
-                    char key[2 * MAX_WORD_LEN + 2];
-                    sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
-                    int state = add_state_bigram(bi, key);
-                    add_transition_bigram(bi, state, idx);
-                }
-                if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                    char key[3 * MAX_WORD_LEN + 3];
-                    sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
-                    int state = add_state_trigram(tri, key);
-                    add_transition_trigram(tri, state, idx);
-                }
-                *prev3 = *prev2; *prev2 = *prev1; *prev1 = idx;
+                add_token_with_transitions(uni, bi, tri, token, prev1, prev2, prev3);
                 pos = 0; in_word = 0;
             }
 
             if (strchr(".,!?;:-", *p)) {
                 char punct[2] = {*p, '\0'};
-                int idx = add_word_unigram(uni, punct);
-                if (*prev1 != -1) add_transition_unigram(uni, *prev1, idx);
-                if (*prev1 != -1 && *prev2 != -1) {
-                    char key[2 * MAX_WORD_LEN + 2];
-                    sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
-                    int state = add_state_bigram(bi, key);
-                    add_transition_bigram(bi, state, idx);
-                }
-                if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                    char key[3 * MAX_WORD_LEN + 3];
-                    sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
-                    int state = add_state_trigram(tri, key);
-                    add_transition_trigram(tri, state, idx);
-                }
-                *prev3 = *prev2; *prev2 = *prev1; *prev1 = idx;
+                add_token_with_transitions(uni, bi, tri, punct, prev1, prev2, prev3);
                 if (*p == '.' || *p == '!' || *p == '?') {
-                    int eos = add_word_unigram(uni, "<EOS>");
-                    if (*prev1 != -1) add_transition_unigram(uni, *prev1, eos);
-                    if (*prev1 != -1 && *prev2 != -1) {
-                        char key[2 * MAX_WORD_LEN + 2];
-                        sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
-                        int state = add_state_bigram(bi, key);
-                        add_transition_bigram(bi, state, eos);
-                    }
-                    if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                        char key[3 * MAX_WORD_LEN + 3];
-                        sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
-                        int state = add_state_trigram(tri, key);
-                        add_transition_trigram(tri, state, eos);
-                    }
-                    *prev3 = *prev2; *prev2 = *prev1; *prev1 = eos;
+                    add_token_with_transitions(uni, bi, tri, "<EOS>", prev1, prev2, prev3);
                     *sentence_start = 1;
                 }
             }
         }
         p++;
     }
+
     if (in_word) {
         token[pos] = '\0';
         if (*sentence_start) {
-            int bos = add_word_unigram(uni, "<BOS>");
-            if (*prev1 != -1 && *prev2 != -1) {
-                char key[2 * MAX_WORD_LEN + 2];
-                sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
-                int state = add_state_bigram(bi, key);
-                add_transition_bigram(bi, state, bos);
-            }
-            if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-                char key[3 * MAX_WORD_LEN + 3];
-                sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
-                int state = add_state_trigram(tri, key);
-                add_transition_trigram(tri, state, bos);
-            }
-            *prev3 = *prev2; *prev2 = *prev1; *prev1 = bos;
+            add_token_with_transitions(uni, bi, tri, "<BOS>", prev1, prev2, prev3);
             *sentence_start = 0;
         }
-        int idx = add_word_unigram(uni, token);
-        if (*prev1 != -1) add_transition_unigram(uni, *prev1, idx);
-        if (*prev1 != -1 && *prev2 != -1) {
-            char key[2 * MAX_WORD_LEN + 2];
-            sprintf(key, "%s|%s", uni->words[*prev2].word, uni->words[*prev1].word);
-            int state = add_state_bigram(bi, key);
-            add_transition_bigram(bi, state, idx);
-        }
-        if (*prev1 != -1 && *prev2 != -1 && *prev3 != -1) {
-            char key[3 * MAX_WORD_LEN + 3];
-            sprintf(key, "%s|%s|%s", uni->words[*prev3].word, uni->words[*prev2].word, uni->words[*prev1].word);
-            int state = add_state_trigram(tri, key);
-            add_transition_trigram(tri, state, idx);
-        }
-        *prev3 = *prev2; *prev2 = *prev1; *prev1 = idx;
+        add_token_with_transitions(uni, bi, tri, token, prev1, prev2, prev3);
     }
 }
 
+/* ------------------------------------------------------------------
+ * Парсинг файла
+ * ------------------------------------------------------------------ */
 static void parse_file(FILE *input, FILE *output, unigram_context *uni, bigram_context *bi, trigram_context *tri) {
     char line[4096];
     int prev1 = -1, prev2 = -1, prev3 = -1;
     int sentence_start = 1;
+    BlockType current_block = BLOCK_NONE;
+
     while (fgets(line, sizeof(line), input)) {
         size_t len = strlen(line);
         if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
-        process_line(line, uni, bi, tri, &prev1, &prev2, &prev3, &sentence_start);
+        process_line(line, uni, bi, tri, &current_block, &prev1, &prev2, &prev3, &sentence_start);
     }
+
+    // Завершаем последний блок
+    if (current_block != BLOCK_NONE) {
+        add_token_with_transitions(uni, bi, tri, "<BLOCK_END>", &prev1, &prev2, &prev3);
+    }
+
+    // Запись локальной таблицы
     if (output) {
         for (int i = 0; i < uni->word_count; i++) {
             fprintf(output, "%s -> ", uni->words[i].word);
@@ -202,6 +193,9 @@ static void parse_file(FILE *input, FILE *output, unigram_context *uni, bigram_c
     }
 }
 
+/* ------------------------------------------------------------------
+ * Запись глобальных таблиц вероятностей
+ * ------------------------------------------------------------------ */
 void write_prob_tables(const unigram_context *uni, const bigram_context *bi,
                        const trigram_context *tri, const char *dir, double alpha) {
     char path[1024];
@@ -271,6 +265,9 @@ void write_prob_tables(const unigram_context *uni, const bigram_context *bi,
     }
 }
 
+/* ------------------------------------------------------------------
+ * Основная функция обработки всех .md файлов в директории
+ * ------------------------------------------------------------------ */
 void process_markdown_files(const char *input_dir, const char *output_dir) {
     ensure_dir(output_dir);
     unigram_context uni; bigram_context bi; trigram_context tri;

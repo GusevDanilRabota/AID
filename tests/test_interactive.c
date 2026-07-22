@@ -1,9 +1,6 @@
 /**
  * @file test_interactive.c
- * @brief Тесты для интерактивного модуля.
- *
- * Проверяет, что interactive_start создаёт файл диалога
- * и корректно обрабатывает команды.
+ * @brief Интеграционный тест для интерактивного режима.
  */
 
 #include <stdio.h>
@@ -17,26 +14,14 @@
 #endif
 
 #include "../src/interactive.h"
-
-static void ensure_dir(const char *path) {
-    struct stat st;
-    if (stat(path, &st) == -1) {
-#ifdef _WIN32
-        if (_mkdir(path) == -1) {
-#else
-        if (mkdir(path, 0755) == -1) {
-#endif
-            perror("mkdir");
-            exit(1);
-        }
-    }
-}
+#include "../src/utils.h"
 
 int main(void) {
     ensure_dir("output");
     ensure_dir("result");
+    ensure_dir("dialogs"); // создаём явно для надёжности
 
-    // 1. Создаём временный файл с командами
+    // 1. Создаём временный файл с командами для диалога
     FILE *cmd = fopen("temp_commands.txt", "w");
     if (!cmd) { perror("fopen temp_commands"); return 1; }
     fprintf(cmd, "Hello world\n");
@@ -44,34 +29,31 @@ int main(void) {
     fprintf(cmd, "exit\n");
     fclose(cmd);
 
-    // 2. Перенаправляем stdin через freopen
-    if (freopen("temp_commands.txt", "r", stdin) == NULL) {
-        perror("freopen stdin");
-        return 1;
-    }
+    // 2. Перенаправляем stdin
+    FILE *stdin_backup = stdin;
+    stdin = fopen("temp_commands.txt", "r");
+    if (!stdin) { perror("fopen stdin"); return 1; }
 
-    // 3. Запускаем interactive с фиксированным именем лога
+    // Запускаем интерактивный режим с именем "test_dialog.md"
     interactive_start("test_dialog.md", 1, 0.8, 10, 0);
 
-    // 4. Возвращаем stdin в исходное состояние (перенаправляем на консоль)
-    // В Windows это может быть CON:, в Unix /dev/tty
-#ifdef _WIN32
-    freopen("CON:", "r", stdin);
-#else
-    freopen("/dev/tty", "r", stdin);
-#endif
-
-    // Удаляем временный файл с командами
+    fclose(stdin);
+    stdin = stdin_backup;
     remove("temp_commands.txt");
 
-    // 5. Проверяем, что файл диалога создан
-    FILE *log = fopen("test_dialog.md", "r");
+    // 3. Проверяем, что файл диалога создан в папке dialogs/
+    char dialog_path[256];
+    snprintf(dialog_path, sizeof(dialog_path), "dialogs/test_dialog.md");
+    FILE *log = fopen(dialog_path, "r");
     if (!log) {
-        fprintf(stderr, "Dialog file not created\n");
+        fprintf(stderr, "Dialog file not created at %s\n", dialog_path);
         return 1;
     }
+    fclose(log);
 
-    // 6. Проверяем содержимое (хотя бы наличие заголовка и сообщений)
+    // 4. Проверяем содержимое (наличие хотя бы одного сообщения)
+    log = fopen(dialog_path, "r");
+    if (!log) return 1;
     char line[256];
     int found = 0;
     while (fgets(line, sizeof(line), log)) {

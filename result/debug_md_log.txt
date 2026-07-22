@@ -1,0 +1,22 @@
+=== Debug Log for md_parser tests ===
+Timestamp: Jul 21 2026 14:23:38
+
+
+=== Starting test: local_tables_created ===
+  [PASS] local table created
+=== Test local_tables_created completed ===
+
+=== Starting test: global_tables_created ===
+  [PASS] global_unigram created
+  [PASS] global_bigram created
+  [PASS] global_trigram created
+=== Test global_tables_created completed ===
+
+=== Starting test: unigram_content ===
+  [FAIL] word 'Заголовок' found
+
+=== Starting test: block_tokens_present ===
+  [FAIL] block start token found
+
+=== All tests completed ===
+Passed: 2, Failed: 4

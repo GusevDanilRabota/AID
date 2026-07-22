@@ -1,8 +1,21 @@
 /**
  * @file markov.c
- * @brief Генератор текста на основе n-грамм.
+ * @brief Реализация генератора текста на основе n-грамм.
  * 
- * Использует глобальные контексты из ngram_model.h.
+ * @defgroup markov_globals Глобальные переменные
+ * @{
+ * Глобальные контексты для хранения загруженных таблиц и флаг их загрузки,
+ * а также список стоп-слов.
+ * @}
+ * @defgroup markov_helpers Вспомогательные функции
+ * @{
+ * Функции загрузки таблиц из файлов и выбора следующего токена с учётом
+ * температуры и фильтрации стоп-слов.
+ * @}
+ * @defgroup markov_api Публичные функции
+ * @{
+ * Реализация API, описанного в markov.h.
+ * @}
  */
 
 #include "markov.h"
@@ -13,50 +26,54 @@
 #include <math.h>
 #include <time.h>
 
-#define MAX_ATTEMPTS 10
+#define MAX_ATTEMPTS 10   /**< Максимальное число попыток выбрать не-стоп-слово */
 
-/* Глобальные контексты для хранения загруженных таблиц */
+/* ============================================================
+ * Группа: markov_globals
+ * ============================================================ */
+/** @addtogroup markov_globals
+ * @{ */
+
+/** Глобальный контекст униграмм */
 static unigram_context g_uni;
+/** Глобальный контекст биграмм */
 static bigram_context g_bi;
+/** Глобальный контекст триграмм */
 static trigram_context g_tri;
+/** Флаг: загружены ли таблицы */
 static int tables_loaded = 0;
 
-/* Стоп-слова */
+/** Массив стоп-слов */
 static char **stopwords = NULL;
+/** Количество стоп-слов */
 static int stopwords_count = 0;
 
-/* ---------- Стоп-слова ---------- */
-int markov_load_stopwords(const char *filename) {
+/** @} */ /* end of markov_globals */
+
+/* ============================================================
+ * Прототипы внутренних функций
+ * ============================================================ */
+static int load_unigram_table(unigram_context *uni, const char *filename);
+static int load_bigram_table(bigram_context *bi, unigram_context *uni, const char *filename);
+static int load_trigram_table(trigram_context *tri, unigram_context *uni, const char *filename);
+static int is_stopword(const char *word);
+static char* select_next(void *trans_list, int is_bigram, int is_trigram, double temperature);
+
+/* ============================================================
+ * Группа: markov_helpers (реализация)
+ * ============================================================ */
+/** @addtogroup markov_helpers
+ * @{ */
+
+/* ---------- Загрузка таблиц из файлов ---------- */
+
+static int load_unigram_table(unigram_context *uni, const char *filename) {
     FILE *f = fopen(filename, "r");
-    if (!f) return -1;
-    char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        size_t len = strlen(line);
-        if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
-        if (strlen(line) == 0) continue;
-        stopwords = realloc(stopwords, (stopwords_count + 1) * sizeof(char *));
-        if (!stopwords) { fclose(f); return -1; }
-        stopwords[stopwords_count] = strdup(line);
-        if (!stopwords[stopwords_count]) { fclose(f); return -1; }
-        stopwords_count++;
+    if (!f) {
+        perror("load_unigram_table");
+        return -1;
     }
-    fclose(f);
-    return 0;
-}
 
-static int is_stopword(const char *word) {
-    for (int i = 0; i < stopwords_count; i++) {
-        if (strcmp(word, stopwords[i]) == 0) return 1;
-    }
-    return 0;
-}
-
-/* ---------- Загрузка таблиц ---------- */
-static int load_unigram_table(const char *filename) {
-    FILE *f = fopen(filename, "r");
-    if (!f) { perror("load_unigram_table"); return -1; }
-
-    init_unigram(&g_uni);
     char line[4096];
     while (fgets(line, sizeof(line), f)) {
         size_t len = strlen(line);
@@ -67,7 +84,7 @@ static int load_unigram_table(const char *filename) {
         if (!arrow) continue;
         *arrow = '\0';
         char *word = line;
-        int from_idx = add_word_unigram(&g_uni, word);
+        int from_idx = add_word_unigram(uni, word);
 
         char *rest = arrow + 4;
         char *token = strtok(rest, ",");
@@ -82,10 +99,10 @@ static int load_unigram_table(const char *filename) {
                 char *end = target_word + strlen(target_word) - 1;
                 while (end > target_word && isspace(*end)) { *end = '\0'; end--; }
                 int count = atoi(open + 1);
-                int to_idx = add_word_unigram(&g_uni, target_word);
-                // Добавляем переход (сначала добавляем с count=1, потом корректируем)
-                add_transition_unigram(&g_uni, from_idx, to_idx);
-                transition *t = g_uni.words[from_idx].transitions;
+                int to_idx = add_word_unigram(uni, target_word);
+                add_transition_unigram(uni, from_idx, to_idx);
+                // Устанавливаем точное значение счётчика (из файла)
+                transition *t = uni->words[from_idx].transitions;
                 while (t) {
                     if (t->target_index == to_idx) {
                         t->count = count;
@@ -101,10 +118,13 @@ static int load_unigram_table(const char *filename) {
     return 0;
 }
 
-static int load_bigram_table(const char *filename) {
+static int load_bigram_table(bigram_context *bi, unigram_context *uni, const char *filename) {
     FILE *f = fopen(filename, "r");
-    if (!f) { perror("load_bigram_table"); return -1; }
-    init_bigram(&g_bi);
+    if (!f) {
+        perror("load_bigram_table");
+        return -1;
+    }
+
     char line[4096];
     while (fgets(line, sizeof(line), f)) {
         size_t len = strlen(line);
@@ -115,7 +135,7 @@ static int load_bigram_table(const char *filename) {
         if (!arrow) continue;
         *arrow = '\0';
         char *key = line;
-        int state_idx = add_state_bigram(&g_bi, key);
+        int state_idx = add_state_bigram(bi, key);
 
         char *rest = arrow + 4;
         char *token = strtok(rest, ",");
@@ -130,14 +150,12 @@ static int load_bigram_table(const char *filename) {
                 char *end = target_word + strlen(target_word) - 1;
                 while (end > target_word && isspace(*end)) { *end = '\0'; end--; }
                 int count = atoi(open + 1);
-                // Найдём индекс целевого слова в униграмном контексте
-                int to_idx = find_word_unigram(&g_uni, target_word);
+                int to_idx = find_word_unigram(uni, target_word);
                 if (to_idx == -1) {
-                    // Если слово не найдено, добавляем его (но такого быть не должно)
-                    to_idx = add_word_unigram(&g_uni, target_word);
+                    to_idx = add_word_unigram(uni, target_word);
                 }
-                add_transition_bigram(&g_bi, state_idx, to_idx);
-                bigram_transition *t = g_bi.states[state_idx].transitions;
+                add_transition_bigram(bi, state_idx, to_idx);
+                bigram_transition *t = bi->states[state_idx].transitions;
                 while (t) {
                     if (t->target_index == to_idx) {
                         t->count = count;
@@ -153,10 +171,13 @@ static int load_bigram_table(const char *filename) {
     return 0;
 }
 
-static int load_trigram_table(const char *filename) {
+static int load_trigram_table(trigram_context *tri, unigram_context *uni, const char *filename) {
     FILE *f = fopen(filename, "r");
-    if (!f) { perror("load_trigram_table"); return -1; }
-    init_trigram(&g_tri);
+    if (!f) {
+        perror("load_trigram_table");
+        return -1;
+    }
+
     char line[4096];
     while (fgets(line, sizeof(line), f)) {
         size_t len = strlen(line);
@@ -167,7 +188,7 @@ static int load_trigram_table(const char *filename) {
         if (!arrow) continue;
         *arrow = '\0';
         char *key = line;
-        int state_idx = add_state_trigram(&g_tri, key);
+        int state_idx = add_state_trigram(tri, key);
 
         char *rest = arrow + 4;
         char *token = strtok(rest, ",");
@@ -182,10 +203,12 @@ static int load_trigram_table(const char *filename) {
                 char *end = target_word + strlen(target_word) - 1;
                 while (end > target_word && isspace(*end)) { *end = '\0'; end--; }
                 int count = atoi(open + 1);
-                int to_idx = find_word_unigram(&g_uni, target_word);
-                if (to_idx == -1) to_idx = add_word_unigram(&g_uni, target_word);
-                add_transition_trigram(&g_tri, state_idx, to_idx);
-                trigram_transition *t = g_tri.states[state_idx].transitions;
+                int to_idx = find_word_unigram(uni, target_word);
+                if (to_idx == -1) {
+                    to_idx = add_word_unigram(uni, target_word);
+                }
+                add_transition_trigram(tri, state_idx, to_idx);
+                trigram_transition *t = tri->states[state_idx].transitions;
                 while (t) {
                     if (t->target_index == to_idx) {
                         t->count = count;
@@ -201,15 +224,30 @@ static int load_trigram_table(const char *filename) {
     return 0;
 }
 
-int markov_load_tables(const char *unigram_file, const char *bigram_file, const char *trigram_file) {
-    if (load_unigram_table(unigram_file) != 0) return -1;
-    if (load_bigram_table(bigram_file) != 0) return -1;
-    if (load_trigram_table(trigram_file) != 0) return -1;
-    tables_loaded = 1;
+/* ---------- Стоп-слова ---------- */
+
+/**
+ * @brief Проверяет, является ли слово стоп-словом.
+ * @param word строка
+ * @return 1 если стоп-слово, иначе 0
+ */
+static int is_stopword(const char *word) {
+    for (int i = 0; i < stopwords_count; i++) {
+        if (strcmp(word, stopwords[i]) == 0) return 1;
+    }
     return 0;
 }
 
 /* ---------- Выбор следующего токена ---------- */
+
+/**
+ * @brief Выбирает следующий токен на основе распределения переходов с температурой.
+ * @param trans_list  указатель на список переходов (transition*, bigram_transition* или trigram_transition*)
+ * @param is_bigram   1 если список биграммный
+ * @param is_trigram  1 если список триграммный
+ * @param temperature параметр температуры
+ * @return динамически выделенная строка с токеном (или NULL при ошибке/отсутствии переходов)
+ */
 static char* select_next(void *trans_list, int is_bigram, int is_trigram, double temperature) {
     int count = 0;
     if (is_trigram) {
@@ -226,7 +264,11 @@ static char* select_next(void *trans_list, int is_bigram, int is_trigram, double
 
     double *weights = malloc(count * sizeof(double));
     int *indices = malloc(count * sizeof(int));
-    if (!weights || !indices) { free(weights); free(indices); return NULL; }
+    if (!weights || !indices) {
+        free(weights);
+        free(indices);
+        return NULL;
+    }
 
     int i = 0;
     double sum = 0.0;
@@ -272,13 +314,88 @@ static char* select_next(void *trans_list, int is_bigram, int is_trigram, double
             break;
         }
     }
-    if (!result && count > 0) result = strdup(g_uni.words[indices[count-1]].word);
+    if (!result && count > 0) {
+        result = strdup(g_uni.words[indices[count-1]].word);
+    }
     free(weights);
     free(indices);
     return result;
 }
 
-/* ---------- Генерация ---------- */
+/** @} */ /* end of markov_helpers */
+
+/* ============================================================
+ * Группа: markov_api (реализация)
+ * ============================================================ */
+/** @addtogroup markov_api
+ * @{ */
+
+int markov_load_tables(const char *unigram_file, const char *bigram_file, const char *trigram_file) {
+    // Если таблицы уже загружены, освобождаем их (избегаем утечки)
+    if (tables_loaded) {
+        markov_free();
+    }
+
+    // Инициализируем глобальные контексты
+    init_unigram(&g_uni);
+    init_bigram(&g_bi);
+    init_trigram(&g_tri);
+
+    // Загружаем униграммы
+    if (load_unigram_table(&g_uni, unigram_file) != 0) {
+        free_unigram(&g_uni);
+        free_bigram(&g_bi);
+        free_trigram(&g_tri);
+        return -1;
+    }
+
+    // Загружаем биграммы (требуется g_uni для поиска индексов слов)
+    if (load_bigram_table(&g_bi, &g_uni, bigram_file) != 0) {
+        free_unigram(&g_uni);
+        free_bigram(&g_bi);
+        free_trigram(&g_tri);
+        return -1;
+    }
+
+    // Загружаем триграммы
+    if (load_trigram_table(&g_tri, &g_uni, trigram_file) != 0) {
+        free_unigram(&g_uni);
+        free_bigram(&g_bi);
+        free_trigram(&g_tri);
+        return -1;
+    }
+
+    tables_loaded = 1;
+    return 0;
+}
+
+int markov_load_stopwords(const char *filename) {
+    FILE *f = fopen(filename, "r");
+    if (!f) return -1;
+
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
+        if (strlen(line) == 0) continue;
+
+        char **new_stopwords = realloc(stopwords, (stopwords_count + 1) * sizeof(char *));
+        if (!new_stopwords) {
+            fclose(f);
+            return -1;
+        }
+        stopwords = new_stopwords;
+        stopwords[stopwords_count] = strdup(line);
+        if (!stopwords[stopwords_count]) {
+            fclose(f);
+            return -1;
+        }
+        stopwords_count++;
+    }
+    fclose(f);
+    return 0;
+}
+
 int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *options) {
     if (!tables_loaded) {
         fprintf(stderr, "Tables not loaded. Call markov_load_tables first.\n");
@@ -287,7 +404,10 @@ int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *op
     if (!buffer || buf_size == 0 || !options) return -1;
 
     static int seeded = 0;
-    if (!seeded) { srand((unsigned int)time(NULL)); seeded = 1; }
+    if (!seeded) {
+        srand((unsigned int)time(NULL));
+        seeded = 1;
+    }
 
     buffer[0] = '\0';
     size_t used = 0;
@@ -295,25 +415,25 @@ int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *op
     // Начальные токены
     const char **start = options->start_tokens;
     if (!start || !start[0]) {
-        // Если не заданы, используем "<BOS>"
         static const char *default_start[] = {"<BOS>", NULL};
         start = default_start;
     }
 
-    // Инициализация состояния (для биграмм и триграмм нужно хранить предыдущие токены)
+    // Состояние для контекста
     char *prev1 = NULL;
     char *prev2 = NULL;
     char *current = NULL;
 
     // Добавляем начальные токены в буфер
     for (int i = 0; start[i] != NULL; i++) {
-        if (used + strlen(start[i]) + 2 > buf_size) break;
+        size_t tok_len = strlen(start[i]);
+        if (used + tok_len + 2 > buf_size) break;
         if (i > 0) {
             buffer[used++] = ' ';
         }
-        strcpy(buffer + used, start[i]);
-        used += strlen(start[i]);
-        // Сохраняем последние два токена для контекста
+        memcpy(buffer + used, start[i], tok_len);
+        used += tok_len;
+        // Сохраняем последние токены для контекста
         if (i >= 1) {
             if (prev1) free(prev1);
             prev1 = current;
@@ -386,13 +506,14 @@ int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *op
         if (!next) break;
 
         // Добавляем в буфер
-        if (used + strlen(next) + 2 > buf_size) {
+        size_t tok_len = strlen(next);
+        if (used + tok_len + 2 > buf_size) {
             free(next);
             break;
         }
         if (used > 0) buffer[used++] = ' ';
-        strcpy(buffer + used, next);
-        used += strlen(next);
+        memcpy(buffer + used, next, tok_len);
+        used += tok_len;
 
         // Обновляем состояние
         free(prev2);
@@ -411,15 +532,19 @@ int markov_generate_ex(char *buffer, size_t buf_size, const MarkovGenOptions *op
     return generated;
 }
 
-/* ---------- Старый API ---------- */
 int markov_generate(char *buffer, size_t buf_size, int max_tokens,
                     double temperature, int use_bigram, const char *start_token) {
     const char *start_arr[2] = { start_token, NULL };
-    MarkovGenOptions opts = { use_bigram ? 1 : 0, temperature, max_tokens, start_arr, 0 };
+    MarkovGenOptions opts = {
+        .order = use_bigram ? 1 : 0,
+        .temperature = temperature,
+        .max_tokens = max_tokens,
+        .start_tokens = start_arr,
+        .use_stopwords = 0
+    };
     return markov_generate_ex(buffer, buf_size, &opts);
 }
 
-/* ---------- Освобождение ---------- */
 void markov_free(void) {
     if (tables_loaded) {
         free_unigram(&g_uni);
@@ -427,8 +552,12 @@ void markov_free(void) {
         free_trigram(&g_tri);
         tables_loaded = 0;
     }
-    for (int i = 0; i < stopwords_count; i++) free(stopwords[i]);
+    for (int i = 0; i < stopwords_count; i++) {
+        free(stopwords[i]);
+    }
     free(stopwords);
     stopwords = NULL;
     stopwords_count = 0;
 }
+
+/** @} */ /* end of markov_api */

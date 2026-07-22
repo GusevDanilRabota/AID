@@ -2,11 +2,8 @@
 .SYNOPSIS
     Сборка, тестирование и запуск markov_processor.
 .DESCRIPTION
-    Автоматически собирает тесты, запускает их, затем компилирует и запускает основную программу.
-.PARAMETER Arguments
-    Аргументы командной строки для markov_processor.
-.PARAMETER Rebuild
-    Принудительная пересборка всех компонентов.
+    Автоматически собирает тесты (в папку bin/tests/), запускает их,
+    затем компилирует и запускает основную программу.
 #>
 
 param(
@@ -15,23 +12,22 @@ param(
     [switch]$Rebuild
 )
 
-# Цвета
-$Green = "Green"
-$Yellow = "Yellow"
-$Red = "Red"
-$Cyan = "Cyan"
-
-# Пути
+$Green = "Green"; $Yellow = "Yellow"; $Red = "Red"; $Cyan = "Cyan"
 $srcDir = ".\src"
 $testDir = ".\tests"
 $outputDir = ".\output"
 $resultDir = ".\result"
 $executable = ".\markov_processor.exe"
+$testBinDir = ".\bin\tests"   # папка для тестовых .exe
 
-# Функция компиляции теста
+# Создаём папку для тестов, если её нет
+if (-not (Test-Path $testBinDir)) {
+    New-Item -ItemType Directory -Path $testBinDir -Force | Out-Null
+}
+
 function Build-Test {
     param($TestName, $Sources)
-    $outExe = "$TestName.exe"
+    $outExe = "$testBinDir\$TestName.exe"
     $cmd = "gcc -std=c99 -Wall -Wextra -I $srcDir -o $outExe $Sources -lm"
     Write-Host "Сборка $TestName..." -ForegroundColor $Yellow
     Invoke-Expression $cmd
@@ -42,11 +38,10 @@ function Build-Test {
     return $outExe
 }
 
-# Функция запуска теста (исправлена)
 function Run-Test {
     param($TestExe)
     Write-Host "Запуск $TestExe..." -ForegroundColor $Cyan
-    & ".\$TestExe"   # добавляем ".\" для выполнения из текущей папки
+    & $TestExe
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Тест $TestExe завершился с ошибкой (код $LASTEXITCODE)" -ForegroundColor $Red
         exit $LASTEXITCODE
@@ -55,18 +50,12 @@ function Run-Test {
     }
 }
 
-# Функция компиляции основной программы
 function Build-Main {
     Write-Host "Компиляция основной программы..." -ForegroundColor $Yellow
     $sources = @(
-        "$srcDir\main.c",
-        "$srcDir\ngram_model.c",
-        "$srcDir\tokenizer.c",
-        "$srcDir\c_parser.c",
-        "$srcDir\md_parser.c",
-        "$srcDir\markov.c",
-        "$srcDir\interactive.c",
-        "$srcDir\utils.c"
+        "$srcDir\main.c", "$srcDir\ngram_model.c", "$srcDir\tokenizer.c",
+        "$srcDir\c_parser.c", "$srcDir\md_parser.c", "$srcDir\markov.c",
+        "$srcDir\interactive.c", "$srcDir\utils.c"
     )
     $cmd = "gcc -std=c99 -Wall -Wextra -I $srcDir -o $executable $($sources -join ' ') -lm"
     Write-Host "Выполняется: $cmd" -ForegroundColor $Cyan
@@ -87,11 +76,11 @@ $tests = @(
     @{Name="test_c_parser"; Sources=@("$testDir\test_c_parser.c", "$srcDir\c_parser.c", "$srcDir\tokenizer.c", "$srcDir\ngram_model.c", "$srcDir\utils.c")},
     @{Name="test_md_parser"; Sources=@("$testDir\test_md_parser.c", "$srcDir\md_parser.c", "$srcDir\ngram_model.c", "$srcDir\utils.c")},
     @{Name="test_markov"; Sources=@("$testDir\test_markov.c", "$srcDir\markov.c", "$srcDir\ngram_model.c", "$srcDir\utils.c")},
-    @{Name="test_interactive"; Sources=@("$testDir\test_interactive.c", "$srcDir\interactive.c", "$srcDir\markov.c", "$srcDir\ngram_model.c", "$srcDir\utils.c")}
+    @{Name="test_interactive"; Sources=@("$testDir\test_interactive.c", "$srcDir\interactive.c", "$srcDir\markov.c", "$srcDir\ngram_model.c", "$srcDir\utils.c", "$srcDir\md_parser.c")}
 )
 
 foreach ($test in $tests) {
-    $exe = "$($test.Name).exe"
+    $exe = "$testBinDir\$($test.Name).exe"
     $needRebuild = $Rebuild
     if (-not $needRebuild) {
         $srcTime = (Get-ChildItem $test.Sources -ErrorAction SilentlyContinue | Measure-Object -Maximum LastWriteTime).Maximum
@@ -113,14 +102,9 @@ foreach ($test in $tests) {
 # ---- 2. Сборка основной программы ----
 Write-Host "`n=== СБОРКА ОСНОВНОЙ ПРОГРАММЫ ===" -ForegroundColor $Yellow
 $mainSources = @(
-    "$srcDir\main.c",
-    "$srcDir\ngram_model.c",
-    "$srcDir\tokenizer.c",
-    "$srcDir\c_parser.c",
-    "$srcDir\md_parser.c",
-    "$srcDir\markov.c",
-    "$srcDir\interactive.c",
-    "$srcDir\utils.c"
+    "$srcDir\main.c", "$srcDir\ngram_model.c", "$srcDir\tokenizer.c",
+    "$srcDir\c_parser.c", "$srcDir\md_parser.c", "$srcDir\markov.c",
+    "$srcDir\interactive.c", "$srcDir\utils.c"
 )
 $needRebuildMain = $Rebuild
 if (-not $needRebuildMain) {
@@ -132,11 +116,7 @@ if (-not $needRebuildMain) {
         $needRebuildMain = $true
     }
 }
-if ($needRebuildMain) {
-    Build-Main
-} else {
-    Write-Host "Основная программа уже собрана, пропускаем сборку." -ForegroundColor $Green
-}
+if ($needRebuildMain) { Build-Main } else { Write-Host "Основная программа уже собрана, пропускаем сборку." -ForegroundColor $Green }
 
 # ---- 3. Очистка старых данных ----
 Write-Host "`n=== ОЧИСТКА СТАРЫХ ВЫХОДНЫХ ДАННЫХ ===" -ForegroundColor $Yellow

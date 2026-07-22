@@ -1,0 +1,11 @@
+=== Test Results for md_parser (blocks) ===
+Generated: Jul 21 2026 14:23:38
+--------------------------------------------
+
+[PASS] local_tables_created
+[PASS] global_tables_created
+[FAIL] unigram_content
+[FAIL] block_tokens_present
+
+--------------------------------------------
+TOTAL: 2 passed, 4 failed

@@ -1,0 +1,50 @@
+=== Debug Log for markov tests ===
+Timestamp: Jul 21 2026 14:45:00
+
+
+=== Starting test: load_tables ===
+  [PASS] markov_load_tables returns 0
+=== Test load_tables completed ===
+
+=== Starting test: generate_unigram ===
+  [PASS] generation returns positive
+  [PASS] buffer not empty
+  Generated: hello  world hello universe hello world hello universe hello world hello
+=== Test generate_unigram completed ===
+
+=== Starting test: generate_bigram ===
+  [PASS] generation returns positive
+  [PASS] buffer not empty
+  Generated: hello world  universe hello world hello world hello world universe hello world hello world universe hello world
+=== Test generate_bigram completed ===
+
+=== Starting test: generate_trigram ===
+  [PASS] generation returns positive
+  [PASS] buffer not empty
+  Generated: hello world universe  hello world universe hello world universe world hello world universe world hello
+=== Test generate_trigram completed ===
+
+=== Starting test: stopwords_filter ===
+  [PASS] generation with stopwords filter works
+  Generated with stopwords: universe  hello universe hello universe world universe hello universe hello universe
+=== Test stopwords_filter completed ===
+
+=== Starting test: old_api ===
+  [PASS] old API works
+  Old API generated: hello  universe world hello world universe hello world hello
+=== Test old_api completed ===
+
+=== Starting test: reload_tables ===
+  [PASS] first load successful
+  [PASS] generation after first load works
+  [PASS] second load successful
+  [PASS] generation after second load works
+  [PASS] buffer not empty after reload
+=== Test reload_tables completed ===
+
+=== Starting test: free_memory ===
+  [PASS] load after free works
+=== Test free_memory completed ===
+
+=== All tests completed ===
+Passed: 8, Failed: 0

@@ -1,25 +1,23 @@
 /**
  * @file interactive.c
- * @brief Реализация интерактивного диалога с долговременной памятью.
+ * @brief Интерактивный режим с обучением на диалогах и контекстной генерацией.
  */
 
 #include "interactive.h"
 #include "markov.h"
+#include "md_parser.h"
 #include "utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#define MAX_INPUT_LEN  4096
-#define MAX_OUTPUT_LEN 8192
-#define MAX_MEMORY_LEN 8192
+#define MAX_INPUT_LEN   4096
+#define MAX_OUTPUT_LEN  8192
+#define MAX_MEMORY_LEN  8192
+#define CONTEXT_TOKENS  30
 
 static char global_memory[MAX_MEMORY_LEN] = {0};
-
-/* ------------------------------------------------------------------
- * Управление памятью
- * ------------------------------------------------------------------ */
 
 static void load_memory(void) {
     FILE *f = fopen("memory/memory.md", "r");
@@ -30,8 +28,6 @@ static void load_memory(void) {
         strncpy(global_memory, buffer, MAX_MEMORY_LEN-1);
         global_memory[MAX_MEMORY_LEN-1] = '\0';
         fclose(f);
-    } else {
-        global_memory[0] = '\0';
     }
 }
 
@@ -42,8 +38,6 @@ static void save_memory(void) {
         fprintf(f, "# Долговременная память AI-агента\n\n");
         fprintf(f, "%s", global_memory);
         fclose(f);
-    } else {
-        perror("fopen memory");
     }
 }
 
@@ -63,65 +57,65 @@ static void add_to_memory(const char *text) {
 
 static void show_memory(void) {
     printf("\n=== Память агента ===\n");
-    if (strlen(global_memory) == 0) {
-        printf("(пусто)\n");
-    } else {
-        printf("%s", global_memory);
-    }
+    if (strlen(global_memory) == 0) printf("(пусто)\n");
+    else printf("%s", global_memory);
     printf("=====================\n\n");
 }
 
-/* ------------------------------------------------------------------
- * Сохранение диалога в архив
- * ------------------------------------------------------------------ */
-static void archive_dialog(const char *log_filename) {
-    ensure_dir("dialogs");
-    if (log_filename && file_exists(log_filename)) {
-        char dest[1024];
-        char stamp[64];
-        get_timestamp(stamp, sizeof(stamp));
-        snprintf(dest, sizeof(dest), "dialogs/dialog_%s.md", stamp);
-        FILE *src = fopen(log_filename, "r");
-        FILE *dst = fopen(dest, "w");
-        if (src && dst) {
-            char buffer[1024];
-            while (fgets(buffer, sizeof(buffer), src)) {
-                fputs(buffer, dst);
-            }
-            fclose(src);
-            fclose(dst);
-            printf("Диалог заархивирован в %s\n", dest);
-        } else {
-            perror("archive dialog");
-        }
+static void train_on_dialog(const char *dialog_filename) {
+    ensure_dir("input_dialogs");
+    char dest[1024];
+    snprintf(dest, sizeof(dest), "input_dialogs/%s", strrchr(dialog_filename, '/') ? strrchr(dialog_filename, '/') + 1 : dialog_filename);
+    FILE *src = fopen(dialog_filename, "r");
+    FILE *dst = fopen(dest, "w");
+    if (!src || !dst) {
+        perror("copy dialog");
+        if (src) fclose(src);
+        if (dst) fclose(dst);
+        return;
     }
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), src)) fputs(buffer, dst);
+    fclose(src); fclose(dst);
+
+    char final_path[1024];
+    snprintf(final_path, sizeof(final_path), "input/%s", strrchr(dialog_filename, '/') ? strrchr(dialog_filename, '/') + 1 : dialog_filename);
+    if (rename(dest, final_path) != 0) {
+        src = fopen(dest, "r");
+        dst = fopen(final_path, "w");
+        if (src && dst) {
+            while (fgets(buffer, sizeof(buffer), src)) fputs(buffer, dst);
+            fclose(src); fclose(dst);
+        }
+        remove(dest);
+    }
+    printf("Переобучение модели на основе нового диалога...\n");
+    process_markdown_files("input", "output");
+    markov_load_tables("output/global_unigram.txt",
+                       "output/global_bigram.txt",
+                       "output/global_trigram.txt");
+    printf("Модель обновлена.\n");
 }
 
-/* ------------------------------------------------------------------
- * Основная функция диалога
- * ------------------------------------------------------------------ */
 void interactive_start(const char *log_filename, int order, double temperature,
                        int max_tokens, int use_stopwords) {
     ensure_dir("dialogs");
     ensure_dir("memory");
-
     load_memory();
 
     char filename[256];
     if (log_filename) {
-        strncpy(filename, log_filename, sizeof(filename)-1);
-        filename[sizeof(filename)-1] = '\0';
+        const char *base = strrchr(log_filename, '/');
+        if (base) base++; else base = log_filename;
+        snprintf(filename, sizeof(filename), "dialogs/%s", base);
     } else {
         char stamp[64];
         get_timestamp(stamp, sizeof(stamp));
-        snprintf(filename, sizeof(filename), "dialog_%s.md", stamp);
+        snprintf(filename, sizeof(filename), "dialogs/dialog_%s.md", stamp);
     }
 
     FILE *log = fopen(filename, "w");
-    if (!log) {
-        perror("fopen log");
-        return;
-    }
+    if (!log) { perror("fopen log"); return; }
 
     char ts[64];
     get_timestamp(ts, sizeof(ts));
@@ -130,13 +124,12 @@ void interactive_start(const char *log_filename, int order, double temperature,
     fprintf(log, "**Параметры:** порядок=%d, T=%.2f, макс. токенов=%d, стоп-слова=%s\n\n",
             order, temperature, max_tokens, use_stopwords ? "Да" : "Нет");
 
-    printf("\n=== Интерактивный режим с долговременной памятью ===\n");
+    printf("\n=== Интерактивный режим с обучением ===\n");
     printf("Команды: /remember <текст>, /memory, /help, exit/quit\n");
-    printf("Текущая память:\n");
     show_memory();
 
-    char input[MAX_INPUT_LEN];
-    char output[MAX_OUTPUT_LEN];
+    char history[8192] = {0};
+    char input[MAX_INPUT_LEN], output[MAX_OUTPUT_LEN];
     MarkovGenOptions opts = {
         .order = order,
         .temperature = temperature,
@@ -150,19 +143,17 @@ void interactive_start(const char *log_filename, int order, double temperature,
         if (!fgets(input, sizeof(input), stdin)) break;
         size_t len = strlen(input);
         if (len > 0 && input[len-1] == '\n') input[len-1] = '\0';
-
         if (strlen(input) == 0) continue;
 
         if (strcmp(input, "exit") == 0 || strcmp(input, "quit") == 0) {
             fprintf(log, "**User:** Выход из диалога.\n\n");
-            fflush(log);
             break;
         }
         if (strcmp(input, "/help") == 0) {
             printf("Доступные команды:\n");
-            printf("  /remember <текст> – сохранить важную информацию в память\n");
-            printf("  /memory           – показать текущую память\n");
-            printf("  /help             – эта справка\n");
+            printf("  /remember <текст> – сохранить в память\n");
+            printf("  /memory           – показать память\n");
+            printf("  /help             – справка\n");
             printf("  exit, quit        – завершить диалог\n");
             continue;
         }
@@ -174,9 +165,6 @@ void interactive_start(const char *log_filename, int order, double temperature,
                 fprintf(log, "**System:** Запомнено.\n\n");
                 fflush(log);
                 continue;
-            } else {
-                printf("Укажите текст для запоминания.\n");
-                continue;
             }
         }
         if (strcmp(input, "/memory") == 0) {
@@ -187,31 +175,62 @@ void interactive_start(const char *log_filename, int order, double temperature,
         fprintf(log, "**User:** %s\n\n", input);
         fflush(log);
 
-        char *start = strdup(input);
-        char *space = strchr(start, ' ');
-        if (space) *space = '\0';
-        const char *start_tokens[2] = { start, NULL };
-        opts.start_tokens = start_tokens;
+        if (strlen(history) + strlen(input) + 3 < sizeof(history)) {
+            strcat(history, input);
+            strcat(history, " ");
+        } else {
+            char temp[8192];
+            size_t half = strlen(history) / 2;
+            while (half > 0 && history[half] != ' ') half++;
+            if (half == 0) half = strlen(history);
+            snprintf(temp, sizeof(temp), "%s %s", history + half, input);
+            strcpy(history, temp);
+        }
+
+        char *start_tokens[4] = {NULL, NULL, NULL, NULL};
+        char history_copy[8192];
+        strcpy(history_copy, history);
+        char *word = strtok(history_copy, " ");
+        char *last_words[3] = {NULL, NULL, NULL};
+        while (word) {
+            last_words[0] = last_words[1];
+            last_words[1] = last_words[2];
+            last_words[2] = word;
+            word = strtok(NULL, " ");
+        }
+        int start_count = 0;
+        for (int i = 0; i < 3; i++) {
+            if (last_words[i]) start_tokens[start_count++] = last_words[i];
+        }
+        start_tokens[start_count] = NULL;
+        opts.start_tokens = (const char**)start_tokens;
 
         int tokens = markov_generate_ex(output, sizeof(output), &opts);
         if (tokens < 0) {
-            const char *err_msg = "Ошибка генерации (нет данных или таблицы не загружены).";
-            printf("Bot: %s\n", err_msg);
-            fprintf(log, "**Bot:** %s\n\n", err_msg);
-            fflush(log);
+            const char *err = "Ошибка генерации (нет данных или таблицы не загружены).";
+            printf("Bot: %s\n", err);
+            fprintf(log, "**Bot:** %s\n\n", err);
         } else {
             printf("Bot: %s\n", output);
             fprintf(log, "**Bot:** %s\n\n", output);
-            fflush(log);
+            if (strlen(history) + strlen(output) + 3 < sizeof(history)) {
+                strcat(history, output);
+                strcat(history, " ");
+            }
         }
-        free(start);
+        fflush(log);
     }
 
     get_timestamp(ts, sizeof(ts));
     fprintf(log, "\n**Окончание:** %s\n", ts);
     fclose(log);
 
-    archive_dialog(filename);
+    printf("\nХотите обучить агента на этом диалоге? (y/n): ");
+    char answer[10];
+    fgets(answer, sizeof(answer), stdin);
+    if (answer[0] == 'y' || answer[0] == 'Y') {
+        train_on_dialog(filename);
+    }
 
     printf("\nТекущий диалог сохранён в: %s\n", filename);
     printf("Память сохранена в memory/memory.md\n");
